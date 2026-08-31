@@ -50,8 +50,10 @@ jobs:
       - name: Packaged self-test
         shell: pwsh
         run: |
-          & .\dist\PSTThreadExtractor.exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw "self-test failed: $LASTEXITCODE" }
+          Remove-Item .\PSTThreadExtractor_selftest.txt -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath '.\dist\PSTThreadExtractor.exe' -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "self-test failed: $($p.ExitCode)" }
+          if (!(Test-Path '.\PSTThreadExtractor_selftest.txt')) { throw 'self-test marker file was not created' }
           Get-Content .\PSTThreadExtractor_selftest.txt
           if ((Get-Content .\PSTThreadExtractor_selftest.txt -Raw).Trim() -ne 'OK') { throw 'self-test marker was not OK' }
 

@@ -1,0 +1,7 @@
+libpff-python-windows==20231205
+pypdf>=6.0,<7
+extract-msg>=0.55,<0.60
+charset-normalizer>=3.4,<4
+striprtf>=0.0.33,<1
+pywin32>=311
+pyinstaller>=6.15,<7

@@ -1,0 +1,75 @@
+name: Build PST Thread Extractor v1.1
+
+on:
+  push:
+    branches:
+      - pst-extractor-v1.1-build
+    paths:
+      - 'pst-extractor-v1.1/**'
+      - '.github/workflows/build-pst-extractor-v1.1.yml'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: pst-extractor-v1.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: 'x64'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          python -m pip install -r requirements_fast.txt
+          python -c "import pypff, pypdf, extract_msg, striprtf, win32com.client; print('dependencies OK')"
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name PSTThreadExtractor `
+            --hidden-import pypff `
+            --collect-all extract_msg `
+            --collect-all striprtf `
+            --hidden-import pypdf `
+            --hidden-import charset_normalizer `
+            --hidden-import win32com `
+            --hidden-import win32com.client `
+            --hidden-import pythoncom `
+            pst_thread_extractor.py
+          if (!(Test-Path 'dist/PSTThreadExtractor.exe')) { throw 'EXE was not created' }
+
+      - name: Packaged self-test
+        shell: pwsh
+        run: |
+          & .\dist\PSTThreadExtractor.exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw "self-test failed: $LASTEXITCODE" }
+          Get-Content .\PSTThreadExtractor_selftest.txt
+          if ((Get-Content .\PSTThreadExtractor_selftest.txt -Raw).Trim() -ne 'OK') { throw 'self-test marker was not OK' }
+
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          $h=(Get-FileHash .\dist\PSTThreadExtractor.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  PSTThreadExtractor.exe" | Set-Content -Encoding ascii .\dist\SHA256.txt
+          Get-Item .\dist\PSTThreadExtractor.exe | Format-List Name,Length
+          Get-Content .\dist\SHA256.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PSTThreadExtractor-v1.1-Windows-x64
+          path: |
+            pst-extractor-v1.1/dist/PSTThreadExtractor.exe
+            pst-extractor-v1.1/dist/SHA256.txt
+            pst-extractor-v1.1/PSTThreadExtractor_selftest.txt
+          if-no-files-found: error
+          retention-days: 7

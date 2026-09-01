@@ -21,10 +21,18 @@ jobs:
         run: |
           $parts = Get-ChildItem 'pst-extractor-v1.3/parts/part_*' | Sort-Object Name
           if ($parts.Count -ne 7) { throw "Expected 7 source parts, found $($parts.Count)" }
-          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          $chunks = @()
+          foreach ($part in $parts) {
+            $raw = Get-Content $part.FullName -Raw
+            $clean = [regex]::Replace($raw, '[^A-Za-z0-9+/=]', '')
+            Write-Host "$($part.Name): raw=$($raw.Length), base64=$($clean.Length)"
+            $chunks += $clean
+          }
+          $b64 = $chunks -join ''
           $bytes = [Convert]::FromBase64String($b64)
           [IO.File]::WriteAllBytes((Join-Path $PWD 'pst-extractor-v1.3/source.zip'), $bytes)
           $hash = (Get-FileHash 'pst-extractor-v1.3/source.zip' -Algorithm SHA256).Hash.ToLower()
+          Write-Host "source zip sha256=$hash"
           if ($hash -ne '033791e6bc7842b3ddb1308113a4ac8b3506466376a25dc95e71932c37e77019') {
             throw "Source bundle checksum mismatch: $hash"
           }

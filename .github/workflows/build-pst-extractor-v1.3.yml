@@ -1,0 +1,95 @@
+name: Build PST Thread Extractor v1.3
+
+on:
+  push:
+    branches:
+      - pst-extractor-v1.3-build
+    paths:
+      - 'pst-extractor-v1.3/**'
+      - '.github/workflows/build-pst-extractor-v1.3.yml'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reconstruct source bundle
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem 'pst-extractor-v1.3/parts/part_*' | Sort-Object Name
+          if ($parts.Count -ne 7) { throw "Expected 7 source parts, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          $bytes = [Convert]::FromBase64String($b64)
+          [IO.File]::WriteAllBytes((Join-Path $PWD 'pst-extractor-v1.3/source.zip'), $bytes)
+          $hash = (Get-FileHash 'pst-extractor-v1.3/source.zip' -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne '033791e6bc7842b3ddb1308113a4ac8b3506466376a25dc95e71932c37e77019') {
+            throw "Source bundle checksum mismatch: $hash"
+          }
+          New-Item -ItemType Directory -Force 'pst-extractor-v1.3/src' | Out-Null
+          Expand-Archive -Path 'pst-extractor-v1.3/source.zip' -DestinationPath 'pst-extractor-v1.3/src' -Force
+          Get-ChildItem 'pst-extractor-v1.3/src'
+
+      - name: Set up Python 3.13 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: 'x64'
+
+      - name: Install dependencies
+        shell: pwsh
+        working-directory: pst-extractor-v1.3/src
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          python -m pip install -r requirements_fast.txt
+          python -c "import pypff, pypdf, extract_msg, striprtf, win32com.client; print('dependencies OK')"
+
+      - name: Build EXE
+        shell: pwsh
+        working-directory: pst-extractor-v1.3/src
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name PSTThreadExtractor_v1.3 `
+            --hidden-import pypff `
+            --collect-all extract_msg `
+            --collect-all striprtf `
+            --hidden-import pypdf `
+            --hidden-import charset_normalizer `
+            --hidden-import win32com `
+            --hidden-import win32com.client `
+            --hidden-import pythoncom `
+            pst_thread_extractor.py
+          if (!(Test-Path 'dist/PSTThreadExtractor_v1.3.exe')) { throw 'EXE was not created' }
+
+      - name: Packaged self-test
+        shell: pwsh
+        working-directory: pst-extractor-v1.3/src
+        run: |
+          Remove-Item '.\PSTThreadExtractor_selftest.txt' -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath '.\dist\PSTThreadExtractor_v1.3.exe' -ArgumentList '--self-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "self-test failed: $($p.ExitCode)" }
+          if (!(Test-Path '.\PSTThreadExtractor_selftest.txt')) { throw 'self-test marker missing' }
+          $marker = (Get-Content '.\PSTThreadExtractor_selftest.txt' -Raw).Trim()
+          Write-Host "self-test marker: $marker"
+          if ($marker -ne 'OK') { throw "self-test marker was not OK: $marker" }
+
+      - name: Create checksums
+        shell: pwsh
+        working-directory: pst-extractor-v1.3/src
+        run: |
+          $h = (Get-FileHash '.\dist\PSTThreadExtractor_v1.3.exe' -Algorithm SHA256).Hash.ToLower()
+          "$h  PSTThreadExtractor_v1.3.exe" | Set-Content -Encoding ascii '.\dist\SHA256.txt'
+          Get-Item '.\dist\PSTThreadExtractor_v1.3.exe' | Format-List Name,Length
+          Get-Content '.\dist\SHA256.txt'
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PSTThreadExtractor-v1.3-Windows-x64
+          path: |
+            pst-extractor-v1.3/src/dist/PSTThreadExtractor_v1.3.exe
+            pst-extractor-v1.3/src/dist/SHA256.txt
+            pst-extractor-v1.3/src/PSTThreadExtractor_selftest.txt
+          if-no-files-found: error
+          retention-days: 7

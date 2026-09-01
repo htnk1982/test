@@ -16,35 +16,59 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Reconstruct source bundle
-        shell: pwsh
-        run: |
-          $parts = Get-ChildItem 'pst-extractor-v1.3/parts/part_*' | Sort-Object Name
-          if ($parts.Count -ne 7) { throw "Expected 7 source parts, found $($parts.Count)" }
-          $chunks = @()
-          foreach ($part in $parts) {
-            $raw = Get-Content $part.FullName -Raw
-            $clean = [regex]::Replace($raw, '[^A-Za-z0-9+/=]', '')
-            Write-Host "$($part.Name): raw=$($raw.Length), base64=$($clean.Length)"
-            $chunks += $clean
-          }
-          $b64 = $chunks -join ''
-          $bytes = [Convert]::FromBase64String($b64)
-          [IO.File]::WriteAllBytes((Join-Path $PWD 'pst-extractor-v1.3/source.zip'), $bytes)
-          $hash = (Get-FileHash 'pst-extractor-v1.3/source.zip' -Algorithm SHA256).Hash.ToLower()
-          Write-Host "source zip sha256=$hash"
-          if ($hash -ne '033791e6bc7842b3ddb1308113a4ac8b3506466376a25dc95e71932c37e77019') {
-            throw "Source bundle checksum mismatch: $hash"
-          }
-          New-Item -ItemType Directory -Force 'pst-extractor-v1.3/src' | Out-Null
-          Expand-Archive -Path 'pst-extractor-v1.3/source.zip' -DestinationPath 'pst-extractor-v1.3/src' -Force
-          Get-ChildItem 'pst-extractor-v1.3/src'
-
       - name: Set up Python 3.13 x64
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
           architecture: 'x64'
+
+      - name: Reconstruct and verify source bundle
+        shell: pwsh
+        run: |
+          @'
+          import base64, hashlib, pathlib, re, sys
+          root = pathlib.Path('pst-extractor-v1.3/parts')
+          files = [root / f'part_{i:02d}' for i in range(7)]
+          parts = [re.sub(r'\s+', '', p.read_text(encoding='utf-8-sig')) for p in files]
+          print('part lengths:', [len(x) for x in parts])
+          expected = '033791e6bc7842b3ddb1308113a4ac8b3506466376a25dc95e71932c37e77019'
+          def decode_hash(s):
+              try:
+                  b = base64.b64decode(s, validate=True)
+              except Exception:
+                  return None, None
+              return b, hashlib.sha256(b).hexdigest()
+          joined = ''.join(parts)
+          data, h = decode_hash(joined)
+          if h != expected:
+              # GitHub transfer diagnostics showed only part_01 is one Base64 char longer than the local source.
+              # Find that one surplus character by the immutable ZIP SHA-256 rather than guessing its position.
+              p = parts[1]
+              if len(p) != 7001:
+                  raise SystemExit(f'unexpected part_01 length {len(p)}; direct hash={h}')
+              prefix = parts[0]
+              suffix = ''.join(parts[2:])
+              found = None
+              for i in range(len(p)):
+                  candidate = prefix + p[:i] + p[i+1:] + suffix
+                  b, hh = decode_hash(candidate)
+                  if hh == expected:
+                      found = (i, p[i], b)
+                      break
+              if found is None:
+                  raise SystemExit(f'could not self-repair source transfer; direct hash={h}')
+              i, ch, data = found
+              print(f'self-repaired transfer: removed one surplus Base64 char from part_01 at offset {i}: {ch!r}')
+          out = pathlib.Path('pst-extractor-v1.3/source.zip')
+          out.write_bytes(data)
+          final = hashlib.sha256(data).hexdigest()
+          print('source zip sha256=', final)
+          if final != expected:
+              raise SystemExit(f'source bundle checksum mismatch: {final}')
+          '@ | python -
+          New-Item -ItemType Directory -Force 'pst-extractor-v1.3/src' | Out-Null
+          Expand-Archive -Path 'pst-extractor-v1.3/source.zip' -DestinationPath 'pst-extractor-v1.3/src' -Force
+          Get-ChildItem 'pst-extractor-v1.3/src'
 
       - name: Install dependencies
         shell: pwsh

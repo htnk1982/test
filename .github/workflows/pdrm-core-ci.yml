@@ -1,0 +1,32 @@
+name: PDRM Core CI
+
+on:
+  push:
+    branches:
+      - pdrm-local-render-engine-v1-rebuild
+  pull_request:
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/**'
+      - '.github/workflows/pdrm-core-ci.yml'
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+          cache-dependency-path: PDRM_Local_Render_Engine_v1/requirements.txt
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ./PDRM_Local_Render_Engine_v1
+      - name: Unit tests
+        run: python -m unittest discover -s PDRM_Local_Render_Engine_v1/tests -v

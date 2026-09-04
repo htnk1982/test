@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pdrm-local-render-engine"
 version = "1.0.0.dev0"
-description = "PDRM Local Render Engine v1 - conservative offline 2mix finalizer core and resilient runner"
+description = "PDRM Local Render Engine v1 - conservative offline 2mix finalizer core, resilient runner, and isolated operator lab"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -21,6 +21,7 @@ dependencies = [
 pdrm-render = "pdrm_engine.cli:main"
 pdrm-safe-render = "pdrm_runtime.cli:main"
 pdrm-accept-real-audio = "pdrm_runtime.acceptance:main"
+pdrm-round9-lab = "pdrm_operator_lab.round9:main"
 
 [tool.setuptools]
-packages = ["pdrm_engine", "pdrm_runtime"]
+packages = ["pdrm_engine", "pdrm_runtime", "pdrm_operator_lab"]

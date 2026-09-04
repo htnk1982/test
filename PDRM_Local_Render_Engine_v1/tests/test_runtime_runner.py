@@ -114,10 +114,13 @@ class RuntimeRunnerTests(unittest.TestCase):
         core = CountingCore()
         out = self.root/"pending.wav"
         original_atomic = __import__("pdrm_runtime.runner", fromlist=["atomic_write_json"]).atomic_write_json
+        sidecar_name = out.name + ".pdrm.json"
 
         def fail_sidecar(path, obj):
             p = Path(path)
-            if p == out.with_name(out.name + ".pdrm.json"):
+            # Windows may expose equivalent temp paths through long/short names;
+            # compare the unique sidecar basename instead of lexical full paths.
+            if p.name == sidecar_name:
                 raise RuntimeError("injected crash after final publish")
             return original_atomic(path, obj)
 

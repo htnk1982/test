@@ -21,10 +21,23 @@ CREATE INDEX IF NOT EXISTS jobs_output_path_idx ON jobs(output_path);
 """
 
 
+CORRUPTION_MARKERS = (
+    "database disk image is malformed",
+    "file is not a database",
+    "database corruption",
+    "malformed database schema",
+)
+
+
 def _archive_db_family(path: Path) -> None:
     for p in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
         if p.exists():
             archive_path(p, "corrupt")
+
+
+def _is_corruption_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in CORRUPTION_MARKERS)
 
 
 class Ledger:
@@ -39,27 +52,37 @@ class Ledger:
         conn.execute("PRAGMA synchronous=FULL")
         return conn
 
+    def _new_clean(self):
+        conn = self._connect()
+        conn.executescript(SCHEMA)
+        conn.commit()
+        return conn
+
     def _open_or_rebuild(self):
+        conn = None
         try:
             conn = self._connect()
             row = conn.execute("PRAGMA quick_check").fetchone()
             if not row or str(row[0]).lower() != "ok":
                 conn.close()
+                conn = None
                 _archive_db_family(self.path)
-                conn = self._connect()
+                return self._new_clean()
             conn.executescript(SCHEMA)
             conn.commit()
             return conn
-        except sqlite3.DatabaseError:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        except sqlite3.DatabaseError as exc:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            # A locked, read-only, permission-denied, I/O, disk-full, etc.
+            # condition is operational and must not be mislabeled as corruption.
+            if not _is_corruption_error(exc):
+                raise
             _archive_db_family(self.path)
-            conn = self._connect()
-            conn.executescript(SCHEMA)
-            conn.commit()
-            return conn
+            return self._new_clean()
 
     def close(self):
         self.conn.close()

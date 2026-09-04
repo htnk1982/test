@@ -20,6 +20,7 @@ dependencies = [
 [project.scripts]
 pdrm-render = "pdrm_engine.cli:main"
 pdrm-safe-render = "pdrm_runtime.cli:main"
+pdrm-accept-real-audio = "pdrm_runtime.acceptance:main"
 
 [tool.setuptools]
 packages = ["pdrm_engine", "pdrm_runtime"]

@@ -18,16 +18,18 @@ if "%~1"=="" (
 
 set "INPUT=%~1"
 set "OUTPUT=%~dpn1_PDRM.wav"
-set "REPORT=%~dpn1_PDRM.json"
+set "WORKROOT=%~dp0.pdrm_runtime"
 
-.venv\Scripts\python.exe -m pdrm_engine.cli "%INPUT%" "%OUTPUT%" --target-lufs -9 --tp -2 --report "%REPORT%"
+.venv\Scripts\python.exe -m pdrm_runtime.cli --work-root "%WORKROOT%" render "%INPUT%" "%OUTPUT%" --target-lufs -9 --tp -2
 set ERR=%ERRORLEVEL%
 echo.
 if "%ERR%"=="0" (
   echo Output: %OUTPUT%
-  echo Report: %REPORT%
+  echo Proof:  %OUTPUT%.pdrm.json
+  echo Runtime state: %WORKROOT%
 ) else (
-  echo Render failed. No automatic retry is performed by this launcher.
+  echo Render failed safely. Existing/foreign output is not overwritten.
+  echo Re-run the same command after correcting the reported problem.
 )
 pause
 exit /b %ERR%

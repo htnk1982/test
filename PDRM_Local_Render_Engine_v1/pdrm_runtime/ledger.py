@@ -48,9 +48,15 @@ class Ledger:
 
     def _connect(self):
         conn = sqlite3.connect(str(self.path), timeout=10.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=FULL")
-        return conn
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=FULL")
+            return conn
+        except Exception:
+            # Especially on Windows, even a failed PRAGMA may leave a file
+            # handle open unless the connection is explicitly closed here.
+            conn.close()
+            raise
 
     def _new_clean(self):
         conn = self._connect()

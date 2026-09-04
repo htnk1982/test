@@ -18,15 +18,14 @@ if "%~1"=="" (
 
 set "INPUT=%~1"
 set "OUTPUT=%~dpn1_PDRM.wav"
-set "WORKROOT=%~dp0.pdrm_runtime"
 
-.venv\Scripts\python.exe -m pdrm_runtime.cli --work-root "%WORKROOT%" render "%INPUT%" "%OUTPUT%" --target-lufs -9 --tp -2
+.venv\Scripts\python.exe -m pdrm_runtime.cli render "%INPUT%" "%OUTPUT%" --target-lufs -9 --tp -2
 set ERR=%ERRORLEVEL%
 echo.
 if "%ERR%"=="0" (
   echo Output: %OUTPUT%
   echo Proof:  %OUTPUT%.pdrm.json
-  echo Runtime state: %WORKROOT%
+  echo Runtime state is stored under LOCALAPPDATA unless PDRM_STATE_ROOT is set.
 ) else (
   echo Render failed safely. Existing/foreign output is not overwritten.
   echo Re-run the same command after correcting the reported problem.

@@ -1,19 +1,13 @@
-# PDRM Local Render Engine v1 — Core Rebuild / MVP-0
+# PDRM Local Render Engine v1 — Core + Resilient Runner / MVP-0
 
-This is the rebuilt DSP core for **PDRM Local Render Engine v1**.
-
-The surviving resilience runtime (`resilience r8.2`) is the outer execution shell.
-This project restores the missing inner DSP entry point:
-
-```python
-pdrm_engine.engine.run_job(input_path, output_path, config, runtime_context)
-```
+This repository rebuilds the missing DSP core and the local execution shell for
+PDRM Local Render Engine v1.
 
 ## Definition
 
-PDRM is an offline finalizer for reasonably finished stereo/mono 2mixes. It must
-not reinterpret the artistic mix. It approaches a requested loudness / true-peak
-profile only as far as preservation gates allow.
+PDRM is an offline finalizer for reasonably finished mono/stereo 2mixes. The
+finished 2mix is the artistic source of truth. Requested loudness / TP is pursued
+only while output-validity and musical-relation gates remain satisfied.
 
 Priority is lexicographic:
 
@@ -22,92 +16,79 @@ Priority is lexicographic:
 3. avoid audible artifacts
 4. approach requested loudness / TP
 5. minimize intervention complexity
-6. codec/delivery robustness
+6. delivery robustness
 
-**NO-OP is a valid successful solution.**
+**NO-OP is a valid successful solution.** Round 9 is hard-locked.
 
-## MVP-0 — Universal Safety Shell
+## DSP Core — MVP-0 Universal Safety Shell
 
-Implemented now:
+`pdrm_engine.engine.run_job(input_path, output_path, config, runtime_context)`
+implements:
 
-- WAV input preflight
-- integrated loudness / sample peak / chunked oversampled TP estimate
-- PLR / crest / transient / spectrum / stereo / section-relation audit
-- exact NO-OP when input is already suitable
+- WAV preflight
+- LUFS / sample peak / chunked oversampled TP / PLR
+- crest / transient / spectrum / stereo / section-relation audit
+- exact NO-OP
 - gain-only candidate
-- conservative linked-channel offline baseline limiter
-- Loudness–Distortion Frontier retreat when the requested target is unsafe
+- conservative linked offline limiter
+- Loudness–Distortion Frontier retreat
 - preservation gates
-- deterministic PCM dither/output
+- deterministic dither and PCM output
 - exact post-write validation
-- automatic rollback to NO-OP if a processed output fails outer validation
-- mandatory `runtime_context`
-- **Round 9 hard lock**
+- rollback to NO-OP on outer-validation failure
+- mandatory runtime context / Round 9 rejection
 
-Not yet in MVP-0:
+Advanced operators (Peak→Body, Small-Signal Density, Harmonic Loudness,
+spectral clipping, HF acceleration, psychoacoustic multiband search) remain
+outside MVP-0 until the safety/runtime acceptance gates pass.
 
-- Peak→Body Transport
-- Small-Signal Density
-- Harmonic Loudness / saturation
-- spectral/surgical clipping
-- HF acceleration control
-- psychoacoustic multiband envelope search
-- codec-in-loop QC
+## Resilient Runner
 
-Those are intentionally held outside the safety core until the real runtime/core
-integration tests pass.
+Use `pdrm-safe-render`, not the bare core, for normal local operation.
 
-## Runtime contract
+The resilient runner adds:
 
-`runtime_context` is mandatory and must expose either a mapping key or attribute:
+- input/config/core fingerprinted job identity
+- SQLite ledger + sidecar proof
+- live-PID + process-creation-token lock
+- stale-lock recovery
+- private staging output
+- no-replace final publish
+- pending-commit recovery after a crash between publish and sidecar
+- foreign-output protection
+- owned-stale-output archive and rebuild
+- idempotent second run (no second DSP render)
+- corrupt-ledger archive/rebuild
+- persistent heartbeat and cancel marker
+- maximum 3 failed attempts per job
+- Round 9 result contract verification
 
-```text
-max_round_allowed <= 8
+## Windows quick start
+
+1. `setup.cmd`
+2. `selftest.cmd`
+3. For direct core experimentation: drag a WAV onto `run.cmd`
+4. For resilient production use from a terminal:
+
+```bat
+.venv\Scripts\pdrm-safe-render.exe --work-root .pdrm_runtime doctor
+.venv\Scripts\pdrm-safe-render.exe --work-root .pdrm_runtime render input.wav output.wav --target-lufs -9 --tp -2
+.venv\Scripts\pdrm-safe-render.exe --work-root .pdrm_runtime verify output.wav
 ```
 
-Optional callbacks:
-
-```text
-heartbeat(stage=..., progress=..., message=...)
-is_cancelled() -> bool
-```
-
-The core rejects:
-
-- `round9_enabled=true`
-- `requested_round >= 9`
-- runtime authority above round 8
-
-Every result explicitly reports:
-
-```json
-{
-  "round9_executed": false,
-  "max_round_executed": 8,
-  "runtime_context_ack": true
-}
-```
-
-## CLI
-
-After installation:
-
-```bash
-pdrm-render input.wav output.wav --target-lufs -9 --tp -2
-```
-
-For development:
-
-```bash
-python -m pdrm_engine.cli input.wav output.wav --target-lufs -9 --tp -2
-```
-
-## Tests
+## Development tests
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-The current CI runs on both Windows and Linux. Round 9 remains locked until the
-real DSP core passes the acceptance sequence with actual audio and the surviving
-r8.2 resilience shell.
+CI runs the same suite on Windows and Ubuntu. It includes real-core integration,
+post-write rollback, deterministic PCM, hard-kill/no-partial-final behavior,
+idempotent runtime suppression, pending-commit recovery, stale-lock recovery,
+foreign output protection and corrupt-ledger rebuild.
+
+## Round 9 gate
+
+This is still a **pre-Round-9** build. Passing unit/CI tests proves the rebuilt
+MVP-0 core/runtime mechanics; actual multi-minute music, codec QC and the US-SOTA
+advanced operators must be validated before Round 9 is unlocked.

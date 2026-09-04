@@ -12,7 +12,7 @@ import soundfile as sf
 
 from pdrm_engine.io_utils import sha256_file, pcm_sha256
 from pdrm_runtime.lock import JobLock
-from pdrm_runtime.runner import ResilientRunner, ForeignOutputError
+from pdrm_runtime.runner import ResilientRunner, ForeignOutputError, InputChangedError
 
 
 def synth(sr=48000, seconds=6.0, amp=0.025):
@@ -35,6 +35,15 @@ class CountingCore:
             "round9_executed":False,
             "max_round_executed":8,
         }
+
+
+class MutatingCore(CountingCore):
+    def __call__(self, input_path, output_path, config, runtime_context):
+        result = super().__call__(input_path, output_path, config, runtime_context)
+        # Simulate a source file being replaced while an expensive render is in flight.
+        with Path(input_path).open("ab") as f:
+            f.write(b"MUTATED")
+        return result
 
 
 class RuntimeRunnerTests(unittest.TestCase):
@@ -86,6 +95,17 @@ class RuntimeRunnerTests(unittest.TestCase):
             with self.assertRaises(ForeignOutputError):
                 runner.render(self.inp, out, self.cfg, core_callable=CountingCore())
             self.assertEqual(out.read_bytes(), b"foreign")
+        finally:
+            runner.close()
+
+    def test_input_changed_during_render_is_not_committed(self):
+        runner = ResilientRunner(self.work)
+        out = self.root/"changed.wav"
+        try:
+            with self.assertRaises(InputChangedError):
+                runner.render(self.inp, out, self.cfg, core_callable=MutatingCore())
+            self.assertFalse(out.exists())
+            self.assertFalse(out.with_name(out.name + ".pdrm.json").exists())
         finally:
             runner.close()
 

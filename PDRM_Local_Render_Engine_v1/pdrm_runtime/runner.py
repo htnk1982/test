@@ -111,6 +111,8 @@ class ResilientRunner:
             "max_round_allowed": MAX_ROUND_ALLOWED,
             "round9_locked": MAX_ROUND_ALLOWED == 8,
             "sqlite": sqlite3.sqlite_version,
+            "sqlite_journal_mode": self.ledger.journal_mode,
+            "sqlite_degraded_reason": self.ledger.degraded_reason,
             "psutil": psutil.__version__,
             "work_root": str(self.work_root),
         }

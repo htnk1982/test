@@ -1,0 +1,11 @@
+{
+  "target_lufs": -9.0,
+  "true_peak_ceiling_dbtp": -2.0,
+  "mode": "safe",
+  "output_subtype": "PCM_24",
+  "target_tolerance_lu": 0.15,
+  "frontier_step_lu": 0.5,
+  "frontier_max_retreat_lu": 6.0,
+  "round9_enabled": false,
+  "requested_round": 8
+}

@@ -23,6 +23,10 @@ class RetryLimitError(RuntimeError):
     pass
 
 
+class InputChangedError(RuntimeError):
+    pass
+
+
 def _sidecar_path(output_path: Path) -> Path:
     return output_path.with_name(output_path.name + ".pdrm.json")
 
@@ -39,7 +43,7 @@ def _job_id(input_hash: str, config_hash: str, output_path: Path) -> str:
 def _safe_publish_no_replace(src: Path, dst: Path) -> None:
     """Publish without ever overwriting a pre-existing destination.
 
-    A crash during copy can leave a partial destination.  pending_commit.json
+    A crash during copy can leave a partial destination. pending_commit.json
     records ownership so the next run may safely remove/recover that partial.
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -246,6 +250,11 @@ class ResilientRunner:
                     if sha256_file(staging) != core_result.get("output_file_sha256"):
                         raise RuntimeError("core result hash does not match staging output")
                     atomic_write_json(core_result_path, core_result)
+
+                # The source is immutable for a job. A changed source invalidates
+                # every cached analysis/render result and must never be committed.
+                if not input_path.exists() or sha256_file(input_path) != input_hash:
+                    raise InputChangedError("INPUT_CHANGED_DURING_RENDER")
 
                 output_hash = sha256_file(staging)
                 output_pcm_hash = pcm_sha256(staging)

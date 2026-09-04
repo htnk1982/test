@@ -24,6 +24,38 @@ class LimiterStats:
         return asdict(self)
 
 
+def release_max_envelope(desired: np.ndarray, release_coeff: float, block_size: int = 65536) -> np.ndarray:
+    """Vectorized equivalent of state=max(desired, state*release_coeff).
+
+    Processing in finite blocks avoids under/overflow in r**n on long tracks,
+    while preserving the exact recurrence up to floating-point roundoff.
+    """
+    d = np.asarray(desired, dtype=np.float64)
+    if len(d) == 0:
+        return d.copy()
+    r = float(np.clip(release_coeff, 0.0, 1.0))
+    if r <= 0.0:
+        return np.maximum(d, 0.0)
+    if r >= 1.0:
+        return np.maximum.accumulate(np.maximum(d, 0.0))
+
+    out = np.empty_like(d)
+    prev = 0.0
+    block_size = max(256, int(block_size))
+    for start in range(0, len(d), block_size):
+        chunk = np.maximum(d[start:start+block_size], 0.0)
+        idx = np.arange(len(chunk), dtype=np.float64)
+        decay = np.power(r, idx)
+        # state[k] = max(prev*r**(k+1), max_j<=k d[j]*r**(k-j))
+        transformed = chunk / np.maximum(decay, np.finfo(np.float64).tiny)
+        base = prev * r
+        cumulative = np.maximum.accumulate(np.maximum(transformed, base))
+        state = decay * cumulative
+        out[start:start+len(chunk)] = state
+        prev = float(state[-1])
+    return out
+
+
 def offline_limiter(
     audio: np.ndarray,
     sr: int,
@@ -35,8 +67,8 @@ def offline_limiter(
     """Conservative linked-channel offline limiter.
 
     This is intentionally a baseline / safety mechanism, not the advanced PDRM
-    research renderer.  It anticipates peaks with a centered future-aware hold
-    and releases exponentially.  L/R share one gain envelope.
+    research renderer. It anticipates peaks with a centered future-aware hold
+    and releases exponentially. L/R share one gain envelope.
     """
     x = ensure_2d(audio).astype(np.float64, copy=False)
     if len(x) == 0:
@@ -53,15 +85,7 @@ def offline_limiter(
 
     release_seconds = max(0.001, float(release_ms) / 1000.0)
     release_coeff = float(np.exp(-1.0 / (release_seconds * sr)))
-    gr = np.empty_like(desired)
-    state = 0.0
-    for i, d in enumerate(desired):
-        d = float(d)
-        if d >= state:
-            state = d
-        else:
-            state = max(d, state * release_coeff)
-        gr[i] = state
+    gr = release_max_envelope(desired, release_coeff)
 
     gain = np.power(10.0, -gr / 20.0)
     out = x * gain[:, None]

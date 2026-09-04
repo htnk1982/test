@@ -1,15 +1,14 @@
 from pathlib import Path
-import shutil
 import tempfile
 import unittest
 
 import numpy as np
 import soundfile as sf
 
-from pdrm_engine.codec import available_profiles, codec_roundtrip_qc
+from pdrm_engine.codec import available_profiles, codec_roundtrip_qc, ffmpeg_path
 
 
-@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed on test host")
+@unittest.skipUnless(ffmpeg_path(), "ffmpeg unavailable, including bundled fallback")
 class CodecQCTests(unittest.TestCase):
     def test_representative_codec_roundtrip_runs(self):
         profiles = available_profiles()
@@ -33,6 +32,7 @@ class CodecQCTests(unittest.TestCase):
                 profiles=profiles,
             )
             self.assertTrue(result["available"])
+            self.assertTrue(result["ffmpeg"])
             self.assertEqual(len(result["profiles"]), 1)
             self.assertIn("decoded_metrics", result["profiles"][0])
 

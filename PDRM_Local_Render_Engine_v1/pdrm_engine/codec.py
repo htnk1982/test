@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
 import shutil
 import subprocess
 import tempfile
 
-import numpy as np
 import soundfile as sf
 
 from .analysis import integrated_lufs, true_peak_db, sample_peak_dbfs, crest_db, transient_crest_db
@@ -17,7 +15,14 @@ class CodecUnavailable(RuntimeError):
 
 
 def ffmpeg_path() -> str | None:
-    return shutil.which("ffmpeg")
+    system = shutil.which("ffmpeg")
+    if system:
+        return system
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
 
 
 def ffmpeg_encoders(ffmpeg: str | None = None) -> set[str]:
@@ -42,8 +47,8 @@ def ffmpeg_encoders(ffmpeg: str | None = None) -> set[str]:
 def available_profiles(ffmpeg: str | None = None) -> list[dict]:
     enc = ffmpeg_encoders(ffmpeg)
     profiles: list[dict] = []
-    # ffmpeg's native AAC encoder is broadly available and provides a useful
-    # distribution-stress proxy. It is not claimed to be Spotify's exact codec.
+    # These are representative distribution-stress probes. They are not claims
+    # about any platform's exact current delivery codec.
     if "aac" in enc:
         profiles.append({"name":"aac_lc_256", "codec":"aac", "bitrate":"256k", "ext":"m4a"})
     if "libopus" in enc:
@@ -66,14 +71,14 @@ def codec_roundtrip_qc(
 ) -> dict:
     """Round-trip through available representative lossy codecs.
 
-    The profiles are endpoint robustness probes, not claims about a platform's
-    exact current delivery codec. PCM quality remains primary; codec QC is a
-    hard-risk/tie-break layer as specified by PDRM v3.
+    PCM quality remains primary; codec QC is a hard-risk/tie-break layer as
+    specified by PDRM v3. A packaged ffmpeg fallback removes the need for a
+    separate manual ffmpeg installation on normal Windows setups.
     """
     wav_path = Path(wav_path).resolve()
     ffmpeg = ffmpeg_path()
     if not ffmpeg:
-        raise CodecUnavailable("ffmpeg not found in PATH")
+        raise CodecUnavailable("ffmpeg unavailable (system PATH and bundled fallback both failed)")
     if profiles is None:
         profiles = available_profiles(ffmpeg)
     if not profiles:
@@ -135,6 +140,7 @@ def codec_roundtrip_qc(
 
     return {
         "available": True,
+        "ffmpeg": str(ffmpeg),
         "source": source,
         "gates": {
             "peak_gate_dbtp": float(peak_gate_dbtp),

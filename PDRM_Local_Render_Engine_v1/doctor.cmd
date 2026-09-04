@@ -6,7 +6,11 @@ if not exist .venv\Scripts\python.exe (
   pause
   exit /b 1
 )
-.venv\Scripts\python.exe -m pdrm_runtime.cli --work-root "%~dp0.pdrm_runtime" doctor
+echo.
+echo PDRM DOCTOR - runtime state is stored under LOCALAPPDATA by default.
+echo Override only with PDRM_STATE_ROOT if you intentionally need another local fixed-volume path.
+echo.
+.venv\Scripts\python.exe -m pdrm_runtime.cli doctor
 set ERR=%ERRORLEVEL%
 pause
 exit /b %ERR%

@@ -6,11 +6,12 @@ import json
 
 from pdrm_engine.codec import codec_roundtrip_qc, CodecUnavailable
 from .runner import ResilientRunner
+from .paths import default_runtime_root
 
 
 def parser():
     p = argparse.ArgumentParser(description="PDRM resilient local runner")
-    p.add_argument("--work-root", type=Path, default=Path(".pdrm_runtime"))
+    p.add_argument("--work-root", type=Path, default=default_runtime_root())
     sp = p.add_subparsers(dest="cmd", required=True)
 
     sp.add_parser("doctor")

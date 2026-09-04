@@ -16,6 +16,7 @@ from pdrm_engine.codec import available_profiles, codec_roundtrip_qc, CodecUnava
 from pdrm_engine.io_utils import pcm_sha256, sha256_file
 from .runner import ResilientRunner
 from .util import atomic_write_json, now_iso
+from .paths import default_acceptance_root
 
 
 def _run_cli(cmd: list[str], log_path: Path, timeout: float | None = None) -> subprocess.CompletedProcess:
@@ -287,7 +288,7 @@ def run_acceptance(
 def build_parser():
     p = argparse.ArgumentParser(description="Run PDRM pre-Round-9 acceptance on private local real audio")
     p.add_argument("input", type=Path)
-    p.add_argument("--acceptance-root", type=Path, default=Path(".pdrm_acceptance"))
+    p.add_argument("--acceptance-root", type=Path, default=default_acceptance_root())
     p.add_argument("--target-lufs", type=float, default=-14.0)
     p.add_argument("--tp", type=float, default=-2.0)
     p.add_argument("--minimum-duration", type=float, default=180.0)

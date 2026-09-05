@@ -44,7 +44,10 @@ jobs:
       - name: Check frozen DSP and production boundary
         shell: python
         run: |
-          import subprocess,accepted_finish
+          import sys,subprocess
+          from pathlib import Path
+          sys.path.insert(0,str(Path.cwd()))
+          import accepted_finish
           paths=subprocess.check_output(['git','diff','--name-only','a01a7cc265fd26d399316d35e6149bcda4f18a2a','HEAD'],text=True).splitlines()
           allowed={'PDRM_Local_Render_Engine_v1/accepted_finish.py','PDRM_Local_Render_Engine_v1/pdrm_finish.cmd','PDRM_Local_Render_Engine_v1/tests/test_accepted_finish.py','PDRM_Local_Render_Engine_v1/docs/ACCEPTED_FINISH_GUIDE.md','.github/workflows/pdrm-accepted-finish-ci.yml'}
           assert set(paths)<=allowed,paths

@@ -1,0 +1,93 @@
+name: PDRM Release Finish
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/release_finish.py'
+      - 'PDRM_Local_Render_Engine_v1/pdrm_release.cmd'
+      - 'PDRM_Local_Render_Engine_v1/pdrm_export.cmd'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_release_finish.py'
+      - 'PDRM_Local_Render_Engine_v1/docs/RELEASE_FINISH_GUIDE.md'
+      - '.github/workflows/pdrm-release-finish-ci.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.14'
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install existing dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify frozen DSP and release-only changes
+        shell: python
+        run: |
+          import sys,subprocess
+          from pathlib import Path
+          sys.path.insert(0,str(Path.cwd()))
+          import accepted_finish
+          print(accepted_finish.verify_dsp())
+          paths=subprocess.check_output(['git','diff','--name-only','8352a968594c9e36da28dded9649d49a50323292','HEAD'],text=True).splitlines()
+          allowed={'PDRM_Local_Render_Engine_v1/release_finish.py','PDRM_Local_Render_Engine_v1/pdrm_release.cmd','PDRM_Local_Render_Engine_v1/pdrm_export.cmd','PDRM_Local_Render_Engine_v1/tests/test_release_finish.py','PDRM_Local_Render_Engine_v1/docs/RELEASE_FINISH_GUIDE.md','.github/workflows/pdrm-release-finish-ci.yml'}
+          assert set(paths)<=allowed,paths
+      - name: Run 84 existing and 23 release regressions
+        shell: python
+        run: |
+          import sys,unittest,json,importlib.metadata
+          from pathlib import Path
+          sys.path.insert(0,str(Path.cwd()))
+          suite=unittest.TestSuite()
+          for pattern in ('test_note_sub*.py','test_hf_temporal_contrast.py','test_accepted_finish.py','test_release_finish.py'):
+              suite.addTests(unittest.defaultTestLoader.discover('tests',pattern=pattern))
+          r=unittest.TextTestRunner(verbosity=2).run(suite)
+          report={'tests_run':r.testsRun,'ok':r.wasSuccessful(),'failures':[(str(t),s) for t,s in r.failures],'errors':[(str(t),s) for t,s in r.errors],'skipped':[(str(t),s) for t,s in r.skipped],'platform':sys.platform,'python':sys.version,'scope':'release engineering; listening acceptance of Note-Sub/HFTC is not reopened','versions':{n:importlib.metadata.version(n) for n in ('numpy','scipy','soundfile','pyloudnorm','imageio-ffmpeg')}}
+          Path('RELEASE_TEST_RESULTS.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+          sys.exit(0 if r.wasSuccessful() and r.testsRun==107 and not r.skipped else 1)
+      - name: Build release addon
+        shell: python
+        run: |
+          import zipfile,hashlib
+          from pathlib import Path
+          with zipfile.ZipFile('PDRM_Release_Finish_v1.1.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for n in ('pdrm_release.cmd','pdrm_export.cmd'):z.write(n,n)
+              z.write('docs/RELEASE_FINISH_GUIDE.md','使い方_配信用.md')
+              z.write('RELEASE_TEST_RESULTS.json','PDRM_Release_v1_1/RELEASE_TEST_RESULTS.json')
+              for n in ('release_finish.py','accepted_finish.py','note_sub_lab.py','note_sub_lab_v02.py','hf_temporal_contrast_lab.py'):
+                  z.write(n,'PDRM_Release_v1_1/'+n)
+              for p in Path('tests').glob('test_*.py'):
+                  if p.name.startswith('test_note_sub') or p.name in ('test_hf_temporal_contrast.py','test_accepted_finish.py','test_release_finish.py'):
+                      z.write(p,'PDRM_Release_v1_1/developer_tests/'+p.name)
+          p=Path('PDRM_Release_Finish_v1.1.zip')
+          Path('PDRM_Release_Finish_v1.1.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n',encoding='utf-8')
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-finish-${{ matrix.os }}-py${{ matrix.python }}
+          path: |
+            PDRM_Local_Render_Engine_v1/PDRM_Release_Finish_v1.1.zip
+            PDRM_Local_Render_Engine_v1/PDRM_Release_Finish_v1.1.sha256
+            PDRM_Local_Render_Engine_v1/RELEASE_TEST_RESULTS.json
+          retention-days: 30

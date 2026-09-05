@@ -1,27 +1,33 @@
 # LocalScribe — developer branch, not a product release
 
-This branch is incomplete application source. Do not run the old GUI or build it as a finished product.
+The legacy application source on this branch is incomplete. Do not build or distribute the old GUI as a finished product.
 
-## Active experiment: official-API CPU reference
+## Active work: reusable engine on a Windows developer VM
 
-The workflow now executes only `localscribe/ci/reference_gate.py` using standard pip-installed vendor wheels. It does not import the application's custom common/network/install modules. Those modules are not registered here and are not being resubmitted. The change reduces the test's capabilities and scope; it is not an alternative transport for the old installer.
+The workflow installs vendor wheels with standard pip and uses `localscribe/core/whisper_engine.py` to transcribe a fixed public Japanese fixture. The core has no installer, network client, recording, credential access, self-update, or device fallback. The old custom common/network/install modules are not registered or imported. They have not been resubmitted through another mechanism.
 
-One fixed public Japanese fixture and one fixed OpenVINO Whisper snapshot are read in an ephemeral Windows developer VM. There is no microphone/loopback access, personal file access, credential loading, arbitrary remote code, security-setting modification, package self-update, automatic device fallback, release creation, or push from the workflow. The workflow token is read-only and is not persisted by checkout.
+## Observed results and design decision
 
-A reference pass means only vendor API -> CPU inference -> local Markdown succeeded for this fixture. It does NOT mean the app installer, portable executable, GUI, NPU, two-stream live transcription, or accuracy/performance requirements passed. The existing Windows application gate is deferred, not marked passed.
+- Run 33962634509: official-API CPU inference and Markdown round-trip passed under OpenVINO 2026.0.0. The pinned model card declares 2026.1.0 minimum, so this is historical evidence, not the supported release baseline.
+- Run 33962981894: with the declared 2026.1.0 runtime, two uncached CPU calls passed. Passing CACHE_DIR during a subsequent pipeline construction failed with `Unsupported attribute type for serialization: inputs`. The entire experimental workflow correctly remained failed. This does not prove the root cause of another machine's historical error.
+- The new reusable core therefore does not permit CPU disk compilation caching. This is an explicit removal of an optional optimization, not a claim that the failing cached path was repaired. The model remains resident during repeated calls.
+- The active workflow now checks real core calls, reconstruction in the same process, transcript consistency, Markdown round-trip and rejection of invalid inputs. New-process/package/GUI/NPU acceptance remains outstanding regardless of its outcome.
 
-## Fixture attribution and limits
+Runtime/GenAI/Tokenizers are pinned to 2026.1.0/2026.1.0.0/2026.1.0.0. Exact resolved dependencies and wheel hashes are preserved by pip's install report. Before product packaging, hashes must become enforced inputs, not only recorded outputs.
 
-- Dataset: `japanese-asr/ja_asr.jsut_basic5000`, revision `278db379fc96167ff2293d7abf9ab86976afcd78`, `sample.flac`.
+## Privacy and operation boundaries
+
+Only a fixed public fixture and fixed vendor model are downloaded into an ephemeral Windows VM. No private audio, conversations, diagnostics, user transcripts, company data, microphones, or loopback capture are used. Model/audio/transcript files are not published as artifacts. Only bounded technical evidence is uploaded. No security-setting modification, paid runner, release, or automatic merge is used. Workflow permissions are read-only and checkout credentials are not persisted.
+
+## Fixture attribution
+
+- `japanese-asr/ja_asr.jsut_basic5000`, revision `278db379fc96167ff2293d7abf9ab86976afcd78`, `sample.flac`.
 - Ryosuke Sonobe, Shinnosuke Takamichi and Hiroshi Saruwatari, *JSUT corpus: free large-scale Japanese speech corpus for end-to-end speech synthesis*, 2017, arXiv:1711.00354.
 - Terms: https://sites.google.com/site/shinnosuketakamichi/publication/jsut
-- Limited to personal, noncommercial developer testing. Audio and generated transcript content are not committed or uploaded as artifacts. Text/corpus rights are separate from the application MIT license.
+- Personal, noncommercial developer testing only. Corpus rights are separate from the application MIT license.
 
-## Completion required before a user trial
+## Before a user trial
 
-1. Reference success with recorded versions, model/fixture hashes and a real nonempty result.
-2. Windows application integration including GUI, packaged runtime and Markdown persistence.
-3. Error preservation, interruption, rollback, file sharing and transcript validation.
-4. Only then target-machine NPU-specific acceptance, with bounded time and useful evidence.
+The packaged executable, GUI, offline runtime, persistence, failures and interruption must pass developer-side Windows integration first. Only then may target-machine NPU-specific acceptance be requested. CPU success is not NPU or real-time success. A single public sample is not a general accuracy benchmark.
 
-`main`, unrelated branches, repository permissions, paid-runner settings, secrets and releases are not changed. This branch must not be auto-merged.
+`main`, unrelated branches, repository permissions, paid-runner settings, secrets and releases are unchanged. Do not merge this draft PR.

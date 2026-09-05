@@ -1,4 +1,4 @@
-"""Developer-only Windows CPU reference test; never imports the app installer.
+"""Developer-only Windows CPU engine test; never imports the app installer.
 
 Uses public data and vendor APIs, with no recording, user files, subprocesses,
 credential loading, security-setting changes, or automatic fallback.
@@ -61,7 +61,7 @@ def main() -> int:
     work = Path(os.environ['RUNNER_TEMP']) / 'LocalScribe 参照試験'
     work.mkdir(parents=True, exist_ok=True)
     report = {
-        'scope': 'official_api_cpu_reference_only_not_application_acceptance',
+        'scope': 'reusable_cpu_engine_only_not_application_acceptance',
         'outcome': 'incomplete', 'phase': 'start',
         'platform': platform.system(), 'python': platform.python_version(),
         'commit': os.environ.get('LS_SOURCE_SHA', ''),
@@ -138,38 +138,28 @@ def main() -> int:
         report['configuration'] = dict(device='CPU', language='<|ja|>', task='transcribe',
                                         max_new_tokens=440, num_beams=1,
                                         do_sample=False, return_timestamps=False,
-                                        cache_dir='explicit_case_matrix')
+                                        cache_dir='disabled_for_cpu')
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from core.whisper_engine import WhisperEngine
+        report['engine_source'] = 'localscribe/core/whisper_engine.py'
+        report['cpu_disk_cache_policy'] = 'disabled_after_reproduced_serialization_failure'
+        report['cache_failure_witness_run'] = 33962981894
         report['cases'] = []
-        cache = work / 'CPU cache 再利用'
-        cache.mkdir(exist_ok=False)
         baseline_text = None
-        for mode in ('cache_omitted', 'cache_fresh', 'cache_reopen'):
+        for mode in ('new_session', 'reconstructed_session'):
             case = {'mode': mode, 'outcome': 'incomplete', 'runs': []}
             report['cases'].append(case)
-            props = {} if mode == 'cache_omitted' else {'CACHE_DIR': str(cache.resolve())}
             save(mode + '_pipeline_construct')
             t0 = time.perf_counter()
-            pipeline = genai.WhisperPipeline(str(model_dir.resolve()), 'CPU', **props)
+            pipeline = WhisperEngine(model_dir, 'CPU')
+            if pipeline.compilation_properties:
+                raise RuntimeError('CPU disk cache unexpectedly enabled')
             case['model_load_seconds'] = time.perf_counter() - t0
-            config = pipeline.get_generation_config()
-            config.language = '<|ja|>'
-            config.task = 'transcribe'
-            config.max_new_tokens = 440
-            config.num_beams = 1
-            config.do_sample = False
-            config.return_timestamps = False
-            for index in range(2 if mode == 'cache_omitted' else 1):
+            for index in range(2 if mode == 'new_session' else 1):
                 save(mode + '_generate_' + str(index))
-                t0 = time.perf_counter()
-                result = pipeline.generate(samples.tolist(), config)
-                seconds = time.perf_counter() - t0
-                if not isinstance(result.texts, (list, tuple)) or not result.texts:
-                    raise RuntimeError('Invalid transcript container')
-                if any(not isinstance(t, str) for t in result.texts):
-                    raise RuntimeError('Invalid transcript item')
-                text = '\n'.join(result.texts).strip()
-                if not text:
-                    raise RuntimeError('Empty transcript')
+                result = pipeline.transcribe(samples.tolist(), 'ja')
+                seconds = result.inference_seconds
+                text = result.text
                 score = cer(REFERENCE, text)
                 if baseline_text is None:
                     baseline_text = normalized(text)
@@ -190,13 +180,19 @@ def main() -> int:
                 if not row['matches_baseline_normalized']:
                     raise RuntimeError('Transcript changed between cache or repeated-call conditions')
             case['outcome'] = 'passed'
-            if mode != 'cache_omitted':
-                case['cache_file_count'] = sum(p.is_file() for p in cache.rglob('*'))
-                if case['cache_file_count'] == 0:
-                    raise RuntimeError('Cache option produced no cache files; reuse is unverified')
+            negative_checks = []
+            for bad_samples, bad_language in (([], 'ja'), ([float('nan')] * 160, 'ja'),
+                                              ([2.0] * 160, 'ja'), ([0.0] * 160, 'invalid')):
+                try:
+                    pipeline.transcribe(bad_samples, bad_language)
+                except ValueError:
+                    negative_checks.append(True)
+                else:
+                    raise RuntimeError('Invalid audio/language unexpectedly accepted')
+            case['invalid_input_rejected'] = len(negative_checks)
             del pipeline
             gc.collect()
-        report['outcome'] = 'reference_passed_not_application_acceptance'
+        report['outcome'] = 'cpu_engine_passed_not_application_acceptance'
         save('complete')
         code = 0
     except Exception as exc:

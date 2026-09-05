@@ -45,7 +45,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Vendor dependency consistency failed' }
           python -m pip freeze --all | Set-Content -Path reference-evidence/resolved-versions.txt -Encoding UTF8
           if ($LASTEXITCODE -ne 0) { throw 'Resolved dependency inventory failed' }
-      - name: Verify declared runtime compatibility and CPU cache lifecycle
+      - name: Test reusable CPU engine, reconstruction and invalid-input rejection
         timeout-minutes: 23
         shell: pwsh
         run: |

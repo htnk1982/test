@@ -12,12 +12,20 @@ on:
 
 jobs:
   test:
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ['3.12']
+        include:
+          - os: windows-latest
+            python-version: '3.14'
     runs-on: ${{ matrix.os }}
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,3 +39,21 @@ jobs:
           python -m pip install -e ./PDRM_Local_Render_Engine_v1
       - name: Unit tests
         run: python -m unittest discover -s PDRM_Local_Render_Engine_v1/tests -v
+      - name: Synthetic filter-path measurements
+        run: python PDRM_Local_Render_Engine_v1/round9_path_audit.py --probe-only PDRM_Local_Render_Engine_v1/FILTER_PATH_SYNTHETIC.json
+      - name: Build audit-only addon
+        shell: python
+        run: |
+          from pathlib import Path
+          import zipfile
+          root = Path('PDRM_Local_Render_Engine_v1')
+          with zipfile.ZipFile('PDRM_Round9_Path_Audit_AddOn.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+              for name in ('round9_path_audit.py', 'round9_path_audit.cmd', 'docs/ROUND9_PATH_AUDIT.md', 'FILTER_PATH_SYNTHETIC.json'):
+                  z.write(root/name, arcname=Path(name).name)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: round9-path-audit-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: |
+            PDRM_Round9_Path_Audit_AddOn.zip
+            PDRM_Local_Render_Engine_v1/FILTER_PATH_SYNTHETIC.json
+          retention-days: 30

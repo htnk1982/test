@@ -15,7 +15,7 @@ from scipy import signal
 
 import note_sub_lab as _v011
 
-VERSION = 'note-sub-lab-0.2.0'
+VERSION = 'note-sub-lab-0.2.1'
 EPS = _v011.EPS
 CONFIG = dict(_v011.CONFIG)
 CONFIG.update(
@@ -301,10 +301,52 @@ def _is_trackable(row):
 
 
 def _row_target(row):
-    target = row.get('sub_hz')
+    target = row.get('tracking_target_hz')
+    if target is None:
+        target = row.get('sub_hz')
     if target is None:
         target = select_generation_target(row.get('f0_hz'))
     return None if target is None else float(target)
+
+
+def stabilize_tracking_rows(rows):
+    """Bridge only an isolated one-frame target outlier using neighboring evidence.
+
+    The raw pitch/target observation is retained.  The outlier frame is forced to
+    zero addition, so context may preserve note lifetime and phase but never turns
+    uncertainty into an audible invented pitch.  SILENCE/UNKNOWN and explicit
+    boundary/reattack evidence are never bridged.
+    """
+    stable = [dict(row) for row in rows]
+    if len(stable) < 3:
+        return stable
+    hop_limit = CONFIG['hop_seconds'] * 1.5
+    for i in range(1, len(stable) - 1):
+        prev, row, nxt = stable[i - 1], stable[i], stable[i + 1]
+        if not (_is_trackable(prev) and _is_trackable(row) and _is_trackable(nxt)):
+            continue
+        if row.get('boundary_evidence') or row.get('reattack_evidence'):
+            continue
+        if (float(row['time']) - float(prev['time']) > hop_limit or
+                float(nxt['time']) - float(row['time']) > hop_limit):
+            continue
+        a, b, c = _row_target(prev), _row_target(row), _row_target(nxt)
+        if a is None or b is None or c is None:
+            continue
+        if cents(a, c) > CONFIG['max_step_cents']:
+            continue
+        if (cents(b, a) <= CONFIG['max_step_cents'] or
+                cents(b, c) <= CONFIG['max_step_cents']):
+            continue
+        bridged = float(math.sqrt(a * c))
+        row['raw_tracking_target_hz'] = float(b)
+        row['tracking_target_hz'] = bridged
+        row['tracking_correction'] = 'isolated_target_outlier_bridged'
+        row['amount_state'] = 'ZERO_TRACKING_OUTLIER'
+        row['state'] = 'KEEP'
+        row['reason'] = 'isolated_target_outlier_no_addition'
+        row['amplitude'] = 0.0
+    return stable
 
 
 def _reattack_detected(group, row):
@@ -327,6 +369,8 @@ def track_notes(rows):
 
     Unknown/silence closes a note; an amount of zero does not. An f0 octave
     switch does not close a note when the selected target remains continuous.
+    A single contradictory target frame may be context-bridged, but it remains
+    silent and its raw observation remains recorded.
     """
     tracks = []
     group = []
@@ -336,7 +380,7 @@ def track_notes(rows):
             tracks.append(group.copy())
             group.clear()
 
-    for row in rows:
+    for row in stabilize_tracking_rows(rows):
         if not _is_trackable(row):
             close()
             continue
@@ -443,6 +487,7 @@ def make_events(rows, path):
             median_sub_hz=float(np.median(freq)),
             active_addition_seconds=float(np.count_nonzero(amplitudes > 0) *
                                           CONFIG['hop_seconds']),
+            tracking_corrections=int(sum(bool(r.get('tracking_correction')) for r in group)),
             attack_seconds=float(fade),
             release_seconds=float(fade),
             phase=0.0,

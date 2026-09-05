@@ -62,7 +62,7 @@ jobs:
                   'errors':[(str(t),s) for t,s in result.errors],'skipped':[(str(t),s) for t,s in result.skipped],
                   'ok':result.wasSuccessful(),'platform':platform.platform(),'python':sys.version,
                   'versions':{n:importlib.metadata.version(n) for n in ('numpy','scipy','soundfile','pyloudnorm','imageio-ffmpeg')},
-                  'scope':'v0.1.1 baseline plus v0.2 synthetic and mixed-signal regressions; not user music or listening quality approval'}
+                  'scope':'v0.1.1 baseline plus v0.2 synthetic, mixed-signal and context regressions; not user music or listening quality approval'}
           Path('NOTE_SUB_TEST_RESULTS.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
           sys.exit(0 if result.wasSuccessful() else 1)
       - name: Build flat addon plus Markdown and tests
@@ -75,6 +75,7 @@ jobs:
               for name in files:z.write(name,Path(name).name)
               z.write('tests/test_note_sub_lab.py','developer_tests/test_note_sub_lab.py')
               z.write('tests/test_note_sub_v02.py','developer_tests/test_note_sub_v02.py')
+              z.write('tests/test_note_sub_v021_context.py','developer_tests/test_note_sub_v021_context.py')
           p=Path('PDRM_Note_Sub_Lab_AddOn.zip')
           Path('PDRM_Note_Sub_Lab_AddOn.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n',encoding='utf-8')
       - uses: actions/upload-artifact@v4

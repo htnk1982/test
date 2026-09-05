@@ -1,0 +1,7 @@
+numpy==2.5.2
+scipy==1.18.1
+soundfile==0.14.0
+pyloudnorm==0.2.0
+psutil==7.2.2
+imageio-ffmpeg==0.6.0
+pyinstaller==6.22.2

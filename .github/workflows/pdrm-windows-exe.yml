@@ -1,0 +1,104 @@
+name: PDRM Windows EXE
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/processed_exe_entry.py'
+      - 'PDRM_Local_Render_Engine_v1/packaging/**'
+      - 'PDRM_Local_Render_Engine_v1/docs/WINDOWS_EXE_GUIDE.md'
+      - '.github/workflows/pdrm-windows-exe.yml'
+permissions:
+  contents: read
+jobs:
+  codec:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: codec-dist
+          key: pdrm-codec-${{ runner.os }}-${{ hashFiles('PDRM_Local_Render_Engine_v1/packaging/build_codec.sh') }}
+      - name: Build redistributable audio-only FFmpeg with matching sources
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-mingw-w64-x86-64 make pkg-config xz-utils
+          bash PDRM_Local_Render_Engine_v1/packaging/build_codec.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-native-codec
+          path: codec-dist
+          retention-days: 30
+  windows:
+    needs: codec
+    runs-on: windows-2022
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: pdrm-native-codec
+          path: codec-dist
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated build dependencies
+        run: |
+          python -m venv .exeenv
+          .\.exeenv\Scripts\python.exe -m pip install -r packaging/requirements-exe.txt
+      - name: Verify DSP unchanged and run existing 139 tests
+        shell: python
+        run: |
+          import os,subprocess
+          from pathlib import Path
+          changed=subprocess.check_output(['git','diff','--name-only','37108f66aadb51ee693e08062448cf0e3f570554','HEAD'],text=True).splitlines()
+          def allowed(p):
+              return p.startswith('PDRM_Local_Render_Engine_v1/packaging/') or p in ('PDRM_Local_Render_Engine_v1/processed_exe_entry.py','PDRM_Local_Render_Engine_v1/docs/WINDOWS_EXE_GUIDE.md','.github/workflows/pdrm-windows-exe.yml')
+          assert all(allowed(p) for p in changed),changed
+          env=os.environ.copy()
+          env['PATH']=str(Path('../codec-dist').resolve())+os.pathsep+env['PATH']
+          script="import sys,unittest,json;from pathlib import Path;sys.path.insert(0,str(Path.cwd()));import accepted_finish;accepted_finish.verify_dsp();s=unittest.TestSuite();[s.addTests(unittest.defaultTestLoader.discover('tests',pattern=p)) for p in ('test_note_sub*.py','test_hf_temporal_contrast.py','test_accepted_finish.py','test_distribution_finish.py','test_processed_finish.py')];r=unittest.TextTestRunner(verbosity=2).run(s);Path('SOURCE_TEST_RESULTS.json').write_text(json.dumps(dict(tests=r.testsRun,ok=r.wasSuccessful(),failures=len(r.failures),errors=len(r.errors),skipped=len(r.skipped))),encoding='utf-8');sys.exit(0 if r.wasSuccessful() and r.testsRun==139 and not r.skipped else 1)"
+          subprocess.run([str(Path('.exeenv/Scripts/python.exe').resolve()),'-c',script],env=env,check=True)
+      - name: Build PyInstaller folder package
+        run: .\.exeenv\Scripts\python.exe packaging/build_windows.py --codec ../codec-dist
+      - name: Verify standalone EXE outside build environment
+        run: .\.exeenv\Scripts\python.exe packaging/smoke_windows.py
+      - name: Package verified EXE and sources
+        shell: python
+        run: |
+          from pathlib import Path
+          import zipfile,hashlib
+          root=Path('dist/PDRM_Processed')
+          assert (root/'EXE_SMOKE_RESULTS.json').is_file()
+          lines=[hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.relative_to(root).as_posix() for p in sorted(root.rglob('*')) if p.is_file()]
+          (root/'SHA256SUMS.txt').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+          name='PDRM_Processed_EXE_Windows_x64_v2.1.1.zip'
+          with zipfile.ZipFile(name,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
+              for p in root.rglob('*'):
+                  if p.is_file():z.write(p,'PDRM_Processed/'+p.relative_to(root).as_posix())
+          p=Path(name)
+          Path(name+'.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+name+'\n',encoding='utf-8')
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-windows-exe-x64
+          path: |
+            PDRM_Local_Render_Engine_v1/PDRM_Processed_EXE_Windows_x64_v2.1.1.zip
+            PDRM_Local_Render_Engine_v1/PDRM_Processed_EXE_Windows_x64_v2.1.1.zip.sha256
+            PDRM_Local_Render_Engine_v1/SOURCE_TEST_RESULTS.json
+            PDRM_Local_Render_Engine_v1/dist/PDRM_Processed/BUILD_REPORT.json
+            PDRM_Local_Render_Engine_v1/dist/PDRM_Processed/EXE_SMOKE_RESULTS.json
+          retention-days: 30

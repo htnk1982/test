@@ -1,0 +1,184 @@
+"""Developer-only Windows CPU reference test; never imports the app installer.
+
+Uses public data and vendor APIs, with no recording, user files, subprocesses,
+credential loading, security-setting changes, or automatic fallback.
+"""
+from __future__ import annotations
+import hashlib
+import importlib.metadata
+import json
+import math
+import os
+from pathlib import Path
+import platform
+import sys
+import time
+import traceback
+import unicodedata
+
+MODEL = 'OpenVINO/whisper-large-v3-turbo-int8-ov'
+REVISION = '4929ae83ea2d1df59f4b5898a9aab8aa1c29e711'
+DATASET = 'japanese-asr/ja_asr.jsut_basic5000'
+DATA_REVISION = '278db379fc96167ff2293d7abf9ab86976afcd78'
+REFERENCE = '水をマレーシアから買わなくてはならないのです。'
+MODEL_FILES = [
+    'config.json', 'generation_config.json', 'preprocessor_config.json',
+    'openvino_encoder_model.xml', 'openvino_encoder_model.bin',
+    'openvino_decoder_model.xml', 'openvino_decoder_model.bin',
+    'openvino_tokenizer.xml', 'openvino_tokenizer.bin',
+    'openvino_detokenizer.xml', 'openvino_detokenizer.bin',
+]
+
+
+def normalized(text: str) -> str:
+    return ''.join(c for c in unicodedata.normalize('NFKC', text)
+                   if not c.isspace() and not unicodedata.category(c).startswith('P'))
+
+
+def cer(reference: str, prediction: str) -> float:
+    a, b = normalized(reference), normalized(prediction)
+    if not a:
+        raise ValueError('Empty reference')
+    row = list(range(len(b) + 1))
+    for i, c in enumerate(a, 1):
+        nxt = [i]
+        for j, d in enumerate(b, 1):
+            nxt.append(min(nxt[-1] + 1, row[j] + 1, row[j - 1] + (c != d)))
+        row = nxt
+    return row[-1] / len(a)
+
+
+def digest(path: Path) -> str:
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def main() -> int:
+    evidence = Path('reference-evidence')
+    evidence.mkdir(exist_ok=True)
+    work = Path(os.environ['RUNNER_TEMP']) / 'LocalScribe 参照試験'
+    work.mkdir(parents=True, exist_ok=True)
+    report = {
+        'scope': 'official_api_cpu_reference_only_not_application_acceptance',
+        'outcome': 'incomplete', 'phase': 'start',
+        'platform': platform.system(), 'python': platform.python_version(),
+        'commit': os.environ.get('LS_SOURCE_SHA', ''),
+        'model': MODEL, 'revision': REVISION,
+        'dataset': DATASET, 'dataset_revision': DATA_REVISION,
+        'npu_tested': False, 'gui_tested': False, 'live_tested': False,
+        'product_release_approved': False,
+        'app_installer_used': False, 'user_data_used': False,
+        'cer_threshold': 0.35,
+        'threshold_scope': 'single_fixture_integration_not_product_accuracy',
+    }
+    started = time.perf_counter()
+
+    def save(phase: str | None = None) -> None:
+        if phase is not None:
+            report['phase'] = phase
+            print('PHASE:', phase, flush=True)
+        report['elapsed_seconds'] = round(time.perf_counter() - started, 3)
+        (evidence / 'result.json').write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    try:
+        save('runtime_import')
+        if platform.system() != 'Windows':
+            raise RuntimeError('This reference gate must actually run on Windows')
+        import numpy as np
+        import soundfile as sf
+        from scipy.signal import resample_poly
+        from huggingface_hub import hf_hub_download
+        import openvino as ov
+        import openvino_genai as genai
+        packages = ['openvino', 'openvino-genai', 'openvino-tokenizers',
+                    'openvino-telemetry', 'numpy', 'soundfile', 'scipy', 'huggingface-hub']
+        report['packages'] = {p: importlib.metadata.version(p) for p in packages}
+        report['available_devices'] = list(ov.Core().available_devices)
+        save('model_download')
+        model_dir = work / 'model'
+        for name in MODEL_FILES + ['README.md']:
+            hf_hub_download(MODEL, name, revision=REVISION, local_dir=model_dir, token=False)
+        report['model_sha256'] = {name: digest(model_dir / name) for name in MODEL_FILES}
+        card = (model_dir / 'README.md').read_text(encoding='utf-8')
+        report['model_compatibility_lines'] = [
+            line for line in card.splitlines()
+            if 'version' in line.lower() and ('openvino' in line.lower() or 'optimum' in line.lower())
+        ][:4]
+        save('public_fixture_download')
+        fixture = Path(hf_hub_download(DATASET, 'sample.flac', repo_type='dataset',
+                                      revision=DATA_REVISION, local_dir=work / 'fixture', token=False))
+        report['fixture_sha256'] = digest(fixture)
+        samples, rate = sf.read(fixture, dtype='float32', always_2d=True)
+        if samples.shape[1] not in (1, 2) or not np.isfinite(samples).all():
+            raise RuntimeError('Invalid public fixture waveform')
+        samples = samples.mean(axis=1)
+        divisor = math.gcd(int(rate), 16000)
+        if rate != 16000:
+            samples = resample_poly(samples, 16000 // divisor, int(rate) // divisor)
+        seconds = len(samples) / 16000
+        if not 2 <= seconds <= 29 or not np.isfinite(samples).all():
+            raise RuntimeError('Invalid public fixture duration or resampling')
+        if np.max(np.abs(samples)) <= 0.001 or np.max(np.abs(samples)) > 1.01:
+            raise RuntimeError('Invalid public fixture amplitude')
+        report['audio_seconds'] = seconds
+        report['configuration'] = dict(device='CPU', language='<|ja|>', task='transcribe',
+                                        max_new_tokens=440, num_beams=1,
+                                        do_sample=False, return_timestamps=False,
+                                        cache_dir='not_set')
+        save('pipeline_construct')
+        t0 = time.perf_counter()
+        pipeline = genai.WhisperPipeline(str(model_dir.resolve()), 'CPU')
+        report['model_load_seconds'] = time.perf_counter() - t0
+        save('generate')
+        config = pipeline.get_generation_config()
+        config.language = '<|ja|>'
+        config.task = 'transcribe'
+        config.max_new_tokens = 440
+        config.num_beams = 1
+        config.do_sample = False
+        config.return_timestamps = False
+        t0 = time.perf_counter()
+        result = pipeline.generate(samples.tolist(), config)
+        report['inference_seconds'] = time.perf_counter() - t0
+        if not isinstance(result.texts, (list, tuple)) or not result.texts:
+            raise RuntimeError('Invalid transcript container')
+        if any(not isinstance(t, str) for t in result.texts):
+            raise RuntimeError('Invalid transcript item')
+        text = '\n'.join(result.texts).strip()
+        if not text:
+            raise RuntimeError('Empty transcript')
+        report['cer'] = cer(REFERENCE, text)
+        report['recognized_characters'] = len(text)
+        save('markdown_export')
+        # This generated transcript stays in the ephemeral workspace, not evidence.
+        output = work / 'transcript.md'
+        output.write_text('# Public Japanese fixture\n\n' + text + '\n', encoding='utf-8')
+        if text not in output.read_text(encoding='utf-8'):
+            raise RuntimeError('Markdown round-trip mismatch')
+        report['markdown_roundtrip_verified'] = True
+        report['transcript_sha256'] = digest(output)
+        if report['cer'] > report['cer_threshold']:
+            raise RuntimeError('Public fixture does not meet the fixed integration threshold')
+        report['outcome'] = 'reference_passed_not_application_acceptance'
+        save('complete')
+        code = 0
+    except Exception as exc:
+        report['outcome'] = 'failed'
+        report['error_type'] = type(exc).__name__
+        report['error'] = str(exc)[:8000]
+        report['traceback'] = traceback.format_exc()[-12000:]
+        save()
+        print(report['traceback'], file=sys.stderr, flush=True)
+        code = 1
+    summary = ('# LocalScribe Windows CPU reference\n\n'
+               f"- Outcome: {report['outcome']}\n- Last phase: {report['phase']}\n"
+               '- This does not certify the GUI, packaged app, NPU, live audio, or product quality.\n'
+               '- No private audio, user files, or transcript content is uploaded.\n')
+    (evidence / 'SUMMARY.md').write_text(summary, encoding='utf-8')
+    print('RESULT:', json.dumps(report, ensure_ascii=False), flush=True)
+    return code
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

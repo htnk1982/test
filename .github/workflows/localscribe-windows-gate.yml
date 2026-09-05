@@ -1,82 +1,67 @@
-name: LocalScribe developer Windows gate
-
+name: LocalScribe Windows CPU reference gate
 on:
   pull_request:
     types: [opened, reopened, synchronize]
     paths:
       - 'localscribe/**'
       - '.github/workflows/localscribe-windows-gate.yml'
-
 permissions:
   contents: read
-
 concurrency:
   group: localscribe-windows-gate-${{ github.event.pull_request.number }}
   cancel-in-progress: true
-
 jobs:
-  windows-cpu-integration:
+  windows-cpu-reference:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'localscribe/')
+      github.event.pull_request.head.ref == 'localscribe/windows-gate'
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 35
     env:
       PYTHONUTF8: '1'
       PYTHONIOENCODING: utf-8
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_DISABLE_IMPLICIT_TOKEN: '1'
       LS_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
-    defaults:
-      run:
-        working-directory: localscribe
     steps:
-      - name: Check out exact reviewed branch snapshot
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check out the exact developer snapshot
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - name: Developer Python only, not the app runtime
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - name: Set up developer Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.13.12'
           architecture: x64
-      - name: Install developer test and fixture tools
+      - name: Install vendor wheels using standard pip, not the app installer
+        timeout-minutes: 8
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          python -m pip install --disable-pip-version-check pytest==8.3.5 numpy==2.2.6 packaging==25.0 soundfile==0.13.1 scipy==1.15.2
-          if ($LASTEXITCODE -ne 0) { throw 'Developer dependency installation failed' }
-      - name: Build and run real Windows CPU integration
-        env:
-          LS_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          python -m pip install --disable-pip-version-check --only-binary=:all: --index-url https://pypi.org/simple -r localscribe/ci/reference-requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Vendor dependency installation failed' }
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'Vendor dependency consistency failed' }
+      - name: Run one real Japanese CPU inference with the pinned model
+        timeout-minutes: 23
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $llvm = Join-Path $env:ProgramFiles 'LLVM\bin'
-          if (-not (Test-Path (Join-Path $llvm 'clang.exe'))) { throw 'LLVM missing from hosted image' }
-          $env:PATH = "$llvm;$env:PATH"
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vs) { throw 'Native compiler toolchain missing' }
-          $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
-          $python = (Get-Command python).Source
-          $batch = Join-Path $env:RUNNER_TEMP 'localscribe-developer-gate.cmd'
-          @('@echo off', ('call "' + $devcmd + '" -arch=x64 -host_arch=x64'), 'if errorlevel 1 exit /b 1', ('"' + $python + '" ci\windows_gate.py'), 'exit /b %errorlevel%') | Set-Content -Path $batch -Encoding ASCII
-          & cmd.exe /d /c $batch
-          if ($LASTEXITCODE -ne 0) { throw 'Developer Windows gate failed; no release allowed' }
-      - name: Save bounded developer evidence only
+          python localscribe/ci/reference_gate.py
+          if ($LASTEXITCODE -ne 0) { throw 'Reference failed; application release remains blocked' }
+      - name: Save developer evidence only, never audio or models
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localscribe-developer-evidence-${{ github.run_id }}
-          path: localscribe/evidence/
+          name: localscribe-reference-evidence-${{ github.run_id }}
+          path: reference-evidence/
           if-no-files-found: warn
           retention-days: 7
-      - name: Show the result, not a mock pass count
+      - name: Publish bounded gate summary
         if: always()
         shell: pwsh
         run: |
-          if (Test-Path 'evidence/SUMMARY.md') {
-            Get-Content 'evidence/SUMMARY.md' -Raw -Encoding UTF8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
+          if (Test-Path 'reference-evidence/SUMMARY.md') {
+            Get-Content 'reference-evidence/SUMMARY.md' -Raw -Encoding UTF8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
           } else {
-            'The developer gate did not complete. No release is authorized.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
+            'Reference test did not reach execution. No release is approved.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
           }

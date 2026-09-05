@@ -1,0 +1,9 @@
+# Developer VM only. The application's custom installer is not used.
+openvino==2026.0.0
+openvino-genai==2026.0.0.0
+openvino-tokenizers==2026.0.0.0
+openvino-telemetry==2025.2.0
+numpy==2.2.6
+soundfile==0.13.1
+scipy==1.15.2
+huggingface-hub==0.34.4

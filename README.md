@@ -1,23 +1,27 @@
-# LocalScribe — Developer Windows Gate
+# LocalScribe — developer branch, not a product release
 
-## Publication status
+This branch is incomplete application source. Do not run the old GUI or build it as a finished product.
 
-**INCOMPLETE SOURCE SNAPSHOT — DO NOT RUN OR RELEASE.**
+## Active experiment: official-API CPU reference
 
-This isolated development branch contains only part of the prepared source package. Publication of the remaining application modules and tests was blocked by the publishing connection's safety check. No workaround has been applied.
+The workflow now executes only `localscribe/ci/reference_gate.py` using standard pip-installed vendor wheels. It does not import the application's custom common/network/install modules. Those modules are not registered here and are not being resubmitted. The change reduces the test's capabilities and scope; it is not an alternative transport for the old installer.
 
-The workflow definition is present, but no pull request has been opened and no Windows integration test has been started for this incomplete snapshot. A workflow file existing in the repository is not evidence of successful execution.
+One fixed public Japanese fixture and one fixed OpenVINO Whisper snapshot are read in an ephemeral Windows developer VM. There is no microphone/loopback access, personal file access, credential loading, arbitrary remote code, security-setting modification, package self-update, automatic device fallback, release creation, or push from the workflow. The workflow token is read-only and is not persisted by checkout.
 
-The branch starts from the unchanged main commit `8fb85fb83b740fbb8ebf2a32d146feb9af67437e`. The original file `1` is preserved. No other branches, repository settings, billing settings, secrets, releases or permissions have been changed.
+A reference pass means only vendor API -> CPU inference -> local Markdown succeeded for this fixture. It does NOT mean the app installer, portable executable, GUI, NPU, two-stream live transcription, or accuracy/performance requirements passed. The existing Windows application gate is deferred, not marked passed.
 
-Only developer source and documentation are included. There are no user recordings, transcripts, conversation contents, original device reports or original error logs. There are no model weights, runtime binaries or executable application files.
+## Fixture attribution and limits
 
-## Required before running the Windows gate
+- Dataset: `japanese-asr/ja_asr.jsut_basic5000`, revision `278db379fc96167ff2293d7abf9ab86976afcd78`, `sample.flac`.
+- Ryosuke Sonobe, Shinnosuke Takamichi and Hiroshi Saruwatari, *JSUT corpus: free large-scale Japanese speech corpus for end-to-end speech synthesis*, 2017, arXiv:1711.00354.
+- Terms: https://sites.google.com/site/shinnosuketakamichi/publication/jsut
+- Limited to personal, noncommercial developer testing. Audio and generated transcript content are not committed or uploaded as artifacts. Text/corpus rights are separate from the application MIT license.
 
-Complete the source publication through an authorized connection, verify the source snapshot against its publication manifest, then open the planned same-repository draft pull request. Do not start a run against the incomplete snapshot or substitute an end-user machine for development integration testing.
+## Completion required before a user trial
 
-The planned gate uses a standard `windows-2022` runner, a read-only workflow token, exact action revisions, no persisted checkout credentials and a 45-minute job limit. It is restricted to same-repository `localscribe/` pull requests. It does not merge the branch or publish a product release.
+1. Reference success with recorded versions, model/fixture hashes and a real nonempty result.
+2. Windows application integration including GUI, packaged runtime and Markdown persistence.
+3. Error preservation, interruption, rollback, file sharing and transcript validation.
+4. Only then target-machine NPU-specific acceptance, with bounded time and useful evidence.
 
-Even a successful future CPU integration run would not establish NPU compatibility, real-time two-source audio performance, general Japanese transcription accuracy or product readiness. Those remain separate acceptance conditions.
-
-`LOCAL_VALIDATION.md` is a historical record of the complete prepared package's local validation, not proof that this partial public snapshot is executable.
+`main`, unrelated branches, repository permissions, paid-runner settings, secrets and releases are not changed. This branch must not be auto-merged.

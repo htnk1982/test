@@ -1,0 +1,88 @@
+name: PDRM Note Sub Lab
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/note_sub*'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_note_sub_lab.py'
+      - 'PDRM_Local_Render_Engine_v1/docs/NOTE_SUB_LAB_GUIDE.md'
+      - '.github/workflows/pdrm-note-sub-ci.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.14'
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: PDRM_Local_Render_Engine_v1/requirements.txt
+      - name: Install existing dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Prove production files unchanged
+        shell: python
+        run: |
+          import subprocess
+          paths=subprocess.check_output(['git','diff','--name-only','ddf7b95a58ac40371107b598439f10b491d2f7f7','HEAD'],text=True).splitlines()
+          bad=[p for p in paths if '/pdrm_engine/' in p or '/pdrm_runtime/' in p or '/pdrm_operator_lab/' in p]
+          assert not bad,bad
+          print('PRODUCTION_UNCHANGED',paths)
+      - name: Test DSP and runtime on synthetic signals only
+        shell: python
+        run: |
+          import sys,unittest,json,platform,importlib.metadata
+          from pathlib import Path
+          sys.path.insert(0,str(Path.cwd()))
+          suite=unittest.defaultTestLoader.discover('tests',pattern='test_note_sub_lab.py')
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          report={'tests_run':result.testsRun,'failures':[(str(t),s) for t,s in result.failures],
+                  'errors':[(str(t),s) for t,s in result.errors],'skipped':[(str(t),s) for t,s in result.skipped],
+                  'ok':result.wasSuccessful(),'platform':platform.platform(),'python':sys.version,
+                  'versions':{n:importlib.metadata.version(n) for n in ('numpy','scipy','soundfile','pyloudnorm','imageio-ffmpeg')},
+                  'scope':'synthetic tests, not user music or listening quality approval'}
+          Path('NOTE_SUB_TEST_RESULTS.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+          sys.exit(0 if result.wasSuccessful() else 1)
+      - name: Build flat addon plus Markdown and tests
+        shell: python
+        run: |
+          import zipfile,hashlib
+          from pathlib import Path
+          files=['note_sub_lab.py','note_sub_launch.py','note_sub_lab.cmd','docs/NOTE_SUB_LAB_GUIDE.md','NOTE_SUB_TEST_RESULTS.json']
+          with zipfile.ZipFile('PDRM_Note_Sub_Lab_AddOn.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for name in files:z.write(name,Path(name).name)
+              z.write('tests/test_note_sub_lab.py','developer_tests/test_note_sub_lab.py')
+          p=Path('PDRM_Note_Sub_Lab_AddOn.zip')
+          Path('PDRM_Note_Sub_Lab_AddOn.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n',encoding='utf-8')
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: note-sub-${{ matrix.os }}-py${{ matrix.python }}
+          path: |
+            PDRM_Local_Render_Engine_v1/PDRM_Note_Sub_Lab_AddOn.zip
+            PDRM_Local_Render_Engine_v1/PDRM_Note_Sub_Lab_AddOn.sha256
+            PDRM_Local_Render_Engine_v1/NOTE_SUB_TEST_RESULTS.json
+            PDRM_Local_Render_Engine_v1/docs/NOTE_SUB_LAB_GUIDE.md
+          retention-days: 30

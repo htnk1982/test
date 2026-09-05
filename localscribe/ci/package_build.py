@@ -1,8 +1,4 @@
-"""Developer VM only: use pip and the vendor hub client to assemble a local bundle.
-
-Only technical evidence is exported by the workflow. EXE, dependencies, models,
-audio and transcript bytes remain in ephemeral runner storage at this stage.
-"""
+"""Developer VM: assemble vendor binaries locally; export technical evidence only."""
 from __future__ import annotations
 from pathlib import Path
 import hashlib
@@ -32,25 +28,23 @@ def main():
     wheels = WORK / 'wheels'
     wheels.mkdir(exist_ok=True)
     req = ROOT / 'ci' / 'package-requirements.txt'
-    # First resolve exact top-level pins, then install the resolved closure by hashes
-    # into a fresh venv. The lock is preserved for the next reproducible build.
     execute([sys.executable, '-m', 'pip', 'download', '--only-binary=:all:',
              '--disable-pip-version-check', '--index-url', 'https://pypi.org/simple',
              '--dest', wheels, '-r', req])
-    rows = []
-    inventory = []
+    rows, inventory = [], []
     for path in sorted(wheels.glob('*.whl')):
         with zipfile.ZipFile(path) as archive:
-            metadata_names = [n for n in archive.namelist() if n.endswith('.dist-info/METADATA')]
+            metadata_names = [n for n in archive.namelist()
+                              if n.count('/') == 1 and n.endswith('.dist-info/METADATA')]
             if len(metadata_names) != 1:
-                raise RuntimeError('Ambiguous wheel metadata')
+                raise RuntimeError('Ambiguous root wheel metadata: ' + path.name + ': ' + repr(metadata_names))
             from email.parser import BytesParser
             metadata = BytesParser().parsebytes(archive.read(metadata_names[0]))
+        if not metadata['Name'] or not metadata['Version']:
+            raise RuntimeError('Incomplete wheel metadata: ' + path.name)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        line = f"{metadata['Name']}=={metadata['Version']} --hash=sha256:{digest}"
-        rows.append(line)
-        inventory.append(dict(name=metadata['Name'], version=metadata['Version'],
-                              filename=path.name, sha256=digest))
+        rows.append(f"{metadata['Name']}=={metadata['Version']} --hash=sha256:{digest}")
+        inventory.append(dict(name=metadata['Name'], version=metadata['Version'], filename=path.name, sha256=digest))
     lock = EVIDENCE / 'windows-build.lock.txt'
     lock.write_text('\n'.join(rows) + '\n', encoding='utf-8')
     (EVIDENCE / 'wheels.json').write_text(json.dumps(inventory, indent=2), encoding='utf-8')
@@ -68,8 +62,6 @@ def assemble():
     sys.path.insert(0, str(ROOT))
     from desktop.model_guard import MODEL_ID, REVISION, HASHES, verify_model, digest
     from huggingface_hub import hf_hub_download
-    import soundfile as sf
-    from scipy.signal import resample_poly
     EVIDENCE.mkdir(exist_ok=True)
     source_model = WORK / 'model'
     for name in list(HASHES) + ['README.md']:
@@ -116,11 +108,24 @@ def assemble():
                  exe_sha256=digest(assembled / 'LocalScribeNPU.exe'), file_count=len(manifest),
                  model_verified=True, binary_exported=False, product_release_approved=False)
     (EVIDENCE / 'build.json').write_text(json.dumps(build, indent=2), encoding='utf-8')
+    print('PACKAGE_BUILD_RESULT:', json.dumps(build), flush=True)
     execute([sys.executable, ROOT / 'ci' / 'frozen_gui_gate.py', assembled, fixture, EVIDENCE], cwd=REPO)
 
 
 if __name__ == '__main__':
-    if '--assemble' in sys.argv:
-        assemble()
-    else:
-        main()
+    try:
+        if '--assemble' in sys.argv:
+            assemble()
+        else:
+            main()
+    except Exception as exc:
+        import traceback
+        EVIDENCE.mkdir(exist_ok=True)
+        details = dict(outcome='failed', error_type=type(exc).__name__,
+                       error=str(exc), traceback=traceback.format_exc(), product_release_approved=False)
+        name = 'assemble-error.json' if '--assemble' in sys.argv else 'build-error.json'
+        (EVIDENCE / name).write_text(json.dumps(details, indent=2), encoding='utf-8')
+        if not (EVIDENCE / 'SUMMARY.md').exists():
+            (EVIDENCE / 'SUMMARY.md').write_text('# LocalScribe package build failed\n\n' +
+                type(exc).__name__ + '\nNo release is approved.\n', encoding='utf-8')
+        raise

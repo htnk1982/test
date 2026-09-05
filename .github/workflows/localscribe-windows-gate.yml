@@ -1,4 +1,4 @@
-name: LocalScribe Windows CPU reference gate
+name: LocalScribe packaged Windows GUI gate
 on:
   pull_request:
     types: [opened, reopened, synchronize]
@@ -11,7 +11,7 @@ concurrency:
   group: localscribe-windows-gate-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
-  windows-cpu-reference:
+  windows-packaged-gui:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'localscribe/windows-gate'
@@ -24,7 +24,7 @@ jobs:
       HF_HUB_DISABLE_IMPLICIT_TOKEN: '1'
       LS_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
-      - name: Check out the exact developer snapshot
+      - name: Check out exact developer source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -34,37 +34,26 @@ jobs:
         with:
           python-version: '3.13.12'
           architecture: x64
-      - name: Install vendor wheels using standard pip, not the app installer
-        timeout-minutes: 8
+      - name: Build bundle, re-extract ZIP and exercise actual packaged GUI
+        timeout-minutes: 30
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path reference-evidence | Out-Null
-          python -m pip install --report reference-evidence/pip-install.json --disable-pip-version-check --only-binary=:all: --index-url https://pypi.org/simple -r localscribe/ci/reference-requirements.txt
-          if ($LASTEXITCODE -ne 0) { throw 'Vendor dependency installation failed' }
-          python -m pip check
-          if ($LASTEXITCODE -ne 0) { throw 'Vendor dependency consistency failed' }
-          python -m pip freeze --all | Set-Content -Path reference-evidence/resolved-versions.txt -Encoding UTF8
-          if ($LASTEXITCODE -ne 0) { throw 'Resolved dependency inventory failed' }
-      - name: Test reusable CPU engine, reconstruction and invalid-input rejection
-        timeout-minutes: 23
-        shell: pwsh
-        run: |
-          python localscribe/ci/reference_gate.py
-          if ($LASTEXITCODE -ne 0) { throw 'Reference failed; application release remains blocked' }
-      - name: Save developer evidence only, never audio or models
+          python localscribe/ci/package_build.py
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged GUI gate failed; no target-PC test authorized' }
+      - name: Retain technical evidence only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localscribe-reference-evidence-${{ github.run_id }}
-          path: reference-evidence/
+          name: localscribe-package-evidence-${{ github.run_id }}
+          path: package-evidence/
           if-no-files-found: warn
           retention-days: 7
-      - name: Publish bounded gate summary
+      - name: Publish bounded summary
         if: always()
         shell: pwsh
         run: |
-          if (Test-Path 'reference-evidence/SUMMARY.md') {
-            Get-Content 'reference-evidence/SUMMARY.md' -Raw -Encoding UTF8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
+          if (Test-Path 'package-evidence/SUMMARY.md') {
+            Get-Content 'package-evidence/SUMMARY.md' -Raw -Encoding UTF8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
           } else {
-            'Reference test did not reach execution. No release is approved.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
+            'Package gate did not complete. No release approved.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
           }

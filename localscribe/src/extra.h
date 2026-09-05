@@ -1,0 +1,74 @@
+#ifndef EXTRA_H
+#define EXTRA_H
+#include "winmini.h"
+typedef struct { DWORD nLength; void* lpSecurityDescriptor; BOOL bInheritHandle; } SECURITY_ATTRIBUTES;
+typedef struct { DWORD cb; LPWSTR lpReserved,lpDesktop,lpTitle; DWORD dwX,dwY,dwXSize,dwYSize,dwXCountChars,dwYCountChars,dwFillAttribute,dwFlags; WORD wShowWindow,cbReserved2; BYTE* lpReserved2; HANDLE hStdInput,hStdOutput,hStdError; } STARTUPINFOW;
+typedef struct { HANDLE hProcess,hThread; DWORD dwProcessId,dwThreadId; } PROCESS_INFORMATION;
+typedef struct { long long PerProcessUserTimeLimit,PerJobUserTimeLimit; DWORD LimitFlags; SIZE_T MinimumWorkingSetSize,MaximumWorkingSetSize; DWORD ActiveProcessLimit; SIZE_T Affinity; DWORD PriorityClass,SchedulingClass; } JOB_BASIC;
+typedef struct { QWORD ReadOperationCount,WriteOperationCount,OtherOperationCount,ReadTransferCount,WriteTransferCount,OtherTransferCount; } IO_COUNTERS;
+typedef struct { JOB_BASIC BasicLimitInformation; IO_COUNTERS IoInfo; SIZE_T ProcessMemoryLimit,JobMemoryLimit,PeakProcessMemoryUsed,PeakJobMemoryUsed; } JOB_EXTENDED;
+typedef struct { DWORD lStructSize; HWND hwndOwner; HINSTANCE hInstance; LPCWSTR lpstrFilter; LPWSTR lpstrCustomFilter; DWORD nMaxCustFilter,nFilterIndex; LPWSTR lpstrFile; DWORD nMaxFile; LPWSTR lpstrFileTitle; DWORD nMaxFileTitle; LPCWSTR lpstrInitialDir,lpstrTitle; DWORD Flags; WORD nFileOffset,nFileExtension; LPCWSTR lpstrDefExt; LPARAM lCustData; void* lpfnHook; LPCWSTR lpTemplateName; void* pvReserved; DWORD dwReserved,FlagsEx; } OPENFILENAMEW;
+#pragma pack(push,2)
+typedef struct { WORD wFormatTag,nChannels; DWORD nSamplesPerSec,nAvgBytesPerSec; WORD nBlockAlign,wBitsPerSample,cbSize; } WAVEFORMATEX;
+#pragma pack(pop)
+typedef struct wavehdr { char* lpData; DWORD dwBufferLength,dwBytesRecorded; SIZE_T dwUser; DWORD dwFlags,dwLoops; struct wavehdr* lpNext; SIZE_T reserved; } WAVEHDR;
+typedef struct { WORD wMid,wPid; DWORD vDriverVersion; WCHAR szPname[32]; DWORD dwFormats; WORD wChannels,wReserved1; } WAVEINCAPSW;
+API BOOL CALL ReadFile(HANDLE,void*,DWORD,DWORD*,void*);
+API DWORD CALL GetFileAttributesW(LPCWSTR);
+API BOOL CALL CopyFileW(LPCWSTR,LPCWSTR,BOOL);
+API BOOL CALL MoveFileExW(LPCWSTR,LPCWSTR,DWORD);
+API BOOL CALL RemoveDirectoryW(LPCWSTR);
+API DWORD CALL GetSystemDirectoryW(LPWSTR,UINT);
+API BOOL CALL GetDiskFreeSpaceExW(LPCWSTR,QWORD*,QWORD*,QWORD*);
+API HANDLE CALL CreateMutexW(void*,BOOL,LPCWSTR);
+API HANDLE CALL CreateThread(void*,SIZE_T,DWORD(CALL*)(void*),void*,DWORD,DWORD*);
+API LONG CALL InterlockedExchange(volatile LONG*,LONG);
+API LONG CALL InterlockedCompareExchange(volatile LONG*,LONG,LONG);
+API BOOL CALL CreateProcessW(LPCWSTR,LPWSTR,void*,void*,BOOL,DWORD,void*,LPCWSTR,STARTUPINFOW*,PROCESS_INFORMATION*);
+API HANDLE CALL CreateJobObjectW(void*,LPCWSTR);
+API BOOL CALL SetInformationJobObject(HANDLE,int,void*,DWORD);
+API BOOL CALL AssignProcessToJobObject(HANDLE,HANDLE);
+API BOOL CALL TerminateJobObject(HANDLE,UINT);
+API BOOL CALL TerminateProcess(HANDLE,UINT);
+API DWORD CALL ResumeThread(HANDLE);
+API DWORD CALL WaitForSingleObject(HANDLE,DWORD);
+API BOOL CALL GetExitCodeProcess(HANDLE,DWORD*);
+API BOOL CALL PostMessageW(HWND,UINT,WPARAM,LPARAM);
+API SIZE_T CALL SetTimer(HWND,SIZE_T,UINT,void*);
+API BOOL CALL KillTimer(HWND,SIZE_T);
+API int CALL MultiByteToWideChar(UINT,DWORD,const char*,int,LPWSTR,int);
+API BOOL CALL GetOpenFileNameW(OPENFILENAMEW*);
+API UINT CALL waveInGetNumDevs(void);
+API UINT CALL waveInGetDevCapsW(SIZE_T,WAVEINCAPSW*,UINT);
+API UINT CALL waveInOpen(HANDLE*,UINT,const WAVEFORMATEX*,SIZE_T,SIZE_T,DWORD);
+API UINT CALL waveInPrepareHeader(HANDLE,WAVEHDR*,UINT);
+API UINT CALL waveInAddBuffer(HANDLE,WAVEHDR*,UINT);
+API UINT CALL waveInStart(HANDLE);
+API UINT CALL waveInReset(HANDLE);
+API UINT CALL waveInUnprepareHeader(HANDLE,WAVEHDR*,UINT);
+API UINT CALL waveInClose(HANDLE);
+API HANDLE CALL WinHttpOpen(LPCWSTR,DWORD,LPCWSTR,LPCWSTR,DWORD);
+API HANDLE CALL WinHttpConnect(HANDLE,LPCWSTR,WORD,DWORD);
+API HANDLE CALL WinHttpOpenRequest(HANDLE,LPCWSTR,LPCWSTR,LPCWSTR,LPCWSTR,LPCWSTR*,DWORD);
+API BOOL CALL WinHttpSetTimeouts(HANDLE,int,int,int,int);
+API BOOL CALL WinHttpSetOption(HANDLE,DWORD,void*,DWORD);
+API BOOL CALL WinHttpSendRequest(HANDLE,LPCWSTR,DWORD,void*,DWORD,DWORD,SIZE_T);
+API BOOL CALL WinHttpReceiveResponse(HANDLE,void*);
+API BOOL CALL WinHttpQueryHeaders(HANDLE,DWORD,LPCWSTR,void*,DWORD*,DWORD*);
+API BOOL CALL WinHttpReadData(HANDLE,void*,DWORD,DWORD*);
+API BOOL CALL WinHttpCloseHandle(HANDLE);
+API LONG CALL BCryptOpenAlgorithmProvider(HANDLE*,LPCWSTR,LPCWSTR,DWORD);
+API LONG CALL BCryptCreateHash(HANDLE,HANDLE*,BYTE*,DWORD,BYTE*,DWORD,DWORD);
+API LONG CALL BCryptHashData(HANDLE,BYTE*,DWORD,DWORD);
+API LONG CALL BCryptFinishHash(HANDLE,BYTE*,DWORD,DWORD);
+API LONG CALL BCryptDestroyHash(HANDLE);
+API LONG CALL BCryptCloseAlgorithmProvider(HANDLE,DWORD);
+_Static_assert(sizeof(STARTUPINFOW)==104,"STARTUPINFOW");
+_Static_assert(sizeof(PROCESS_INFORMATION)==24,"PROCESS_INFORMATION");
+_Static_assert(sizeof(SECURITY_ATTRIBUTES)==24,"SECURITY_ATTRIBUTES");
+_Static_assert(sizeof(JOB_EXTENDED)==144,"JOB_EXTENDED");
+_Static_assert(sizeof(OPENFILENAMEW)==152,"OPENFILENAMEW");
+_Static_assert(sizeof(WAVEFORMATEX)==18,"WAVEFORMATEX");
+_Static_assert(sizeof(WAVEHDR)==48,"WAVEHDR");
+_Static_assert(sizeof(WAVEINCAPSW)==80,"WAVEINCAPSW");
+#endif

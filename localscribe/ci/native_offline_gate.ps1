@@ -11,9 +11,8 @@ $rules = @()
 $originalProfiles = @(Get-NetFirewallProfile | Select-Object Name,Enabled)
 try {
     if ((Get-Service MpsSvc).Status -ne 'Running') { throw 'Windows Firewall service is not running' }
-    # Only strengthen the disposable runner's policy; never disable a protection.
     foreach ($profile in $originalProfiles) {
-        if (-not $profile.Enabled) { Set-NetFirewallProfile -Name $profile.Name -Enabled True }
+        if ([string]$profile.Enabled -ne 'True') { Set-NetFirewallProfile -Name $profile.Name -Enabled True }
     }
     foreach ($program in @($exe,$worker)) {
         $name = 'LocalScribe-CI-' + [Guid]::NewGuid().ToString('N')
@@ -25,14 +24,29 @@ try {
         if ($filter.Program -ne $program) { throw 'Rule program does not match the extracted EXE' }
     }
     $activeProfiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore)
-    if (@($activeProfiles | Where-Object { -not $_.Enabled }).Count -ne 0) { throw 'An effective firewall profile is disabled' }
+    if (@($activeProfiles | Where-Object { [string]$_.Enabled -ne 'True' }).Count -ne 0) { throw 'An effective firewall profile is disabled' }
+    $profileEvidence = @($activeProfiles | ForEach-Object { [ordered]@{name=[string]$_.Name;enabled=[string]$_.Enabled} })
+    [ordered]@{scope='outbound_block_for_exact_two_executables';profiles=$profileEvidence;rule_count=$rules.Count} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Evidence 'network_policy.json') -Encoding UTF8
     for ($index=0; $index -lt 2; $index++) {
         $private = Join-Path $env:RUNNER_TEMP ('LocalScribe gated output ' + $index)
         New-Item -ItemType Directory -Path $private | Out-Null
+        $owned = $null
         try {
-            & $exe '--exercise' $Fixture $private
-            if ($LASTEXITCODE -ne 0) { throw ('Packaged GUI process failed: ' + $LASTEXITCODE) }
+            # GUI programs can return control before exit through PowerShell's call operator.
+            # Own the specific process and read its exit code only after bounded completion.
+            $info = New-Object System.Diagnostics.ProcessStartInfo
+            $info.FileName = $exe
+            $info.WorkingDirectory = $fullBundle
+            $info.UseShellExecute = $false
+            $info.Arguments = '--exercise "' + $Fixture + '" "' + $private + '"'
+            $owned = [System.Diagnostics.Process]::Start($info)
+            if (-not $owned.WaitForExit(420000)) { throw 'Developer GUI test exceeded seven minutes' }
+            if ($owned.ExitCode -ne 0) { throw ('Packaged GUI process failed: ' + $owned.ExitCode) }
         } finally {
+            if ($null -ne $owned) {
+                if (-not $owned.HasExited) { $owned.Kill(); $null=$owned.WaitForExit(5000) }
+                $owned.Dispose()
+            }
             $report = Join-Path $private 'native-gui.json'
             if (Test-Path -LiteralPath $report) {
                 Copy-Item -LiteralPath $report -Destination (Join-Path $Evidence ('gui_' + $index + '.json'))
@@ -42,9 +56,12 @@ try {
         $result = Get-Content -LiteralPath (Join-Path $private 'native-gui.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($result.outcome -ne 'passed') { throw 'Native GUI result was not passed' }
     }
-    $network = [ordered]@{outcome='passed';scope='outbound_block_rules_for_exact_host_and_worker';profiles_enabled=$true;rule_count=$rules.Count;packet_capture=$false;fixture_uploaded=$false}
-    $network | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Evidence 'network.json') -Encoding UTF8
+    $network = [ordered]@{outcome='passed';scope='outbound_block_rules_for_exact_host_and_worker';profiles=$profileEvidence;rule_count=$rules.Count;packet_capture=$false;fixture_uploaded=$false}
+    $network | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Evidence 'network.json') -Encoding UTF8
+} catch {
+    $_ | Out-String | Set-Content -LiteralPath (Join-Path $Evidence 'offline_failure.txt') -Encoding UTF8
+    throw
 } finally {
-    # Remove only rules created by this script; no unrelated policy edits.
+    # Remove only the app-specific rules created here. No protection is disabled.
     foreach ($name in $rules) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
 }

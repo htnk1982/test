@@ -1,4 +1,4 @@
-name: LocalScribe packaged Windows GUI gate
+name: LocalScribe bounded native GUI gate
 on:
   pull_request:
     types: [opened, reopened, synchronize]
@@ -11,12 +11,12 @@ concurrency:
   group: localscribe-windows-gate-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
-  windows-packaged-gui:
+  windows-native-gui:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'localscribe/windows-gate'
     runs-on: windows-2022
-    timeout-minutes: 35
+    timeout-minutes: 30
     env:
       PYTHONUTF8: '1'
       PYTHONIOENCODING: utf-8
@@ -29,31 +29,29 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - name: Set up developer Python
+      - name: Set up build Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.13.12'
           architecture: x64
-      - name: Build bundle, re-extract ZIP and exercise actual packaged GUI
-        timeout-minutes: 30
+      - name: Build native host and isolated fixed worker, test actual extracted EXEs
+        timeout-minutes: 25
         shell: pwsh
         run: |
-          python localscribe/ci/package_build.py
-          if ($LASTEXITCODE -ne 0) { throw 'Packaged GUI gate failed; no target-PC test authorized' }
+          python localscribe/ci/native_build.py
+          if ($LASTEXITCODE -ne 0) { throw 'Native desktop acceptance failed' }
       - name: Retain technical evidence only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: localscribe-package-evidence-${{ github.run_id }}
-          path: package-evidence/
+          name: localscribe-native-evidence-${{ github.run_id }}
+          path: native-evidence/
           if-no-files-found: warn
           retention-days: 7
-      - name: Publish bounded summary
+      - name: Publish scope
         if: always()
         shell: pwsh
         run: |
-          if (Test-Path 'package-evidence/SUMMARY.md') {
-            Get-Content 'package-evidence/SUMMARY.md' -Raw -Encoding UTF8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
-          } else {
-            'Package gate did not complete. No release approved.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
+          if (Test-Path 'native-evidence/SUMMARY.md') {
+            Get-Content 'native-evidence/SUMMARY.md' -Raw -Encoding UTF8 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding UTF8
           }

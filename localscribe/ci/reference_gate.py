@@ -4,6 +4,7 @@ Uses public data and vendor APIs, with no recording, user files, subprocesses,
 credential loading, security-setting changes, or automatic fallback.
 """
 from __future__ import annotations
+import gc
 import hashlib
 import importlib.metadata
 import json
@@ -11,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import sys
 import time
 import traceback
@@ -94,6 +96,8 @@ def main() -> int:
         packages = ['openvino', 'openvino-genai', 'openvino-tokenizers',
                     'openvino-telemetry', 'numpy', 'soundfile', 'scipy', 'huggingface-hub']
         report['packages'] = {p: importlib.metadata.version(p) for p in packages}
+        report['runtime_versions'] = {'openvino': str(ov.__version__),
+                                      'genai': str(genai.__version__)}
         report['available_devices'] = list(ov.Core().available_devices)
         save('model_download')
         model_dir = work / 'model'
@@ -105,6 +109,15 @@ def main() -> int:
             line for line in card.splitlines()
             if 'version' in line.lower() and ('openvino' in line.lower() or 'optimum' in line.lower())
         ][:4]
+        minimum = re.search(r'OpenVINO version (\d+\.\d+\.\d+) and higher', card)
+        if minimum is None:
+            raise RuntimeError('Model compatibility minimum is not explicit')
+        actual = tuple(int(x) for x in report['packages']['openvino'].split('.')[:3])
+        required = tuple(int(x) for x in minimum.group(1).split('.'))
+        report['model_minimum_runtime'] = minimum.group(1)
+        report['declared_runtime_compatibility_met'] = actual >= required
+        if actual < required:
+            raise RuntimeError('Runtime is below the model-declared minimum')
         save('public_fixture_download')
         fixture = Path(hf_hub_download(DATASET, 'sample.flac', repo_type='dataset',
                                       revision=DATA_REVISION, local_dir=work / 'fixture', token=False))
@@ -125,41 +138,64 @@ def main() -> int:
         report['configuration'] = dict(device='CPU', language='<|ja|>', task='transcribe',
                                         max_new_tokens=440, num_beams=1,
                                         do_sample=False, return_timestamps=False,
-                                        cache_dir='not_set')
-        save('pipeline_construct')
-        t0 = time.perf_counter()
-        pipeline = genai.WhisperPipeline(str(model_dir.resolve()), 'CPU')
-        report['model_load_seconds'] = time.perf_counter() - t0
-        save('generate')
-        config = pipeline.get_generation_config()
-        config.language = '<|ja|>'
-        config.task = 'transcribe'
-        config.max_new_tokens = 440
-        config.num_beams = 1
-        config.do_sample = False
-        config.return_timestamps = False
-        t0 = time.perf_counter()
-        result = pipeline.generate(samples.tolist(), config)
-        report['inference_seconds'] = time.perf_counter() - t0
-        if not isinstance(result.texts, (list, tuple)) or not result.texts:
-            raise RuntimeError('Invalid transcript container')
-        if any(not isinstance(t, str) for t in result.texts):
-            raise RuntimeError('Invalid transcript item')
-        text = '\n'.join(result.texts).strip()
-        if not text:
-            raise RuntimeError('Empty transcript')
-        report['cer'] = cer(REFERENCE, text)
-        report['recognized_characters'] = len(text)
-        save('markdown_export')
-        # This generated transcript stays in the ephemeral workspace, not evidence.
-        output = work / 'transcript.md'
-        output.write_text('# Public Japanese fixture\n\n' + text + '\n', encoding='utf-8')
-        if text not in output.read_text(encoding='utf-8'):
-            raise RuntimeError('Markdown round-trip mismatch')
-        report['markdown_roundtrip_verified'] = True
-        report['transcript_sha256'] = digest(output)
-        if report['cer'] > report['cer_threshold']:
-            raise RuntimeError('Public fixture does not meet the fixed integration threshold')
+                                        cache_dir='explicit_case_matrix')
+        report['cases'] = []
+        cache = work / 'CPU cache 再利用'
+        cache.mkdir(exist_ok=False)
+        baseline_text = None
+        for mode in ('cache_omitted', 'cache_fresh', 'cache_reopen'):
+            case = {'mode': mode, 'outcome': 'incomplete', 'runs': []}
+            report['cases'].append(case)
+            props = {} if mode == 'cache_omitted' else {'CACHE_DIR': str(cache.resolve())}
+            save(mode + '_pipeline_construct')
+            t0 = time.perf_counter()
+            pipeline = genai.WhisperPipeline(str(model_dir.resolve()), 'CPU', **props)
+            case['model_load_seconds'] = time.perf_counter() - t0
+            config = pipeline.get_generation_config()
+            config.language = '<|ja|>'
+            config.task = 'transcribe'
+            config.max_new_tokens = 440
+            config.num_beams = 1
+            config.do_sample = False
+            config.return_timestamps = False
+            for index in range(2 if mode == 'cache_omitted' else 1):
+                save(mode + '_generate_' + str(index))
+                t0 = time.perf_counter()
+                result = pipeline.generate(samples.tolist(), config)
+                seconds = time.perf_counter() - t0
+                if not isinstance(result.texts, (list, tuple)) or not result.texts:
+                    raise RuntimeError('Invalid transcript container')
+                if any(not isinstance(t, str) for t in result.texts):
+                    raise RuntimeError('Invalid transcript item')
+                text = '\n'.join(result.texts).strip()
+                if not text:
+                    raise RuntimeError('Empty transcript')
+                score = cer(REFERENCE, text)
+                if baseline_text is None:
+                    baseline_text = normalized(text)
+                row = {'index': index, 'inference_seconds': seconds, 'cer': score,
+                       'recognized_characters': len(text),
+                       'matches_baseline_normalized': normalized(text) == baseline_text}
+                case['runs'].append(row)
+                save(mode + '_markdown_export_' + str(index))
+                # Transcript remains in the ephemeral workspace, never evidence.
+                output = work / (mode + '_' + str(index) + '.md')
+                output.write_text('# Public Japanese fixture\n\n' + text + '\n', encoding='utf-8')
+                row['markdown_roundtrip_verified'] = text in output.read_text(encoding='utf-8')
+                row['transcript_sha256'] = digest(output)
+                if not row['markdown_roundtrip_verified']:
+                    raise RuntimeError('Markdown round-trip mismatch')
+                if score > report['cer_threshold']:
+                    raise RuntimeError('Public fixture does not meet the fixed integration threshold')
+                if not row['matches_baseline_normalized']:
+                    raise RuntimeError('Transcript changed between cache or repeated-call conditions')
+            case['outcome'] = 'passed'
+            if mode != 'cache_omitted':
+                case['cache_file_count'] = sum(p.is_file() for p in cache.rglob('*'))
+                if case['cache_file_count'] == 0:
+                    raise RuntimeError('Cache option produced no cache files; reuse is unverified')
+            del pipeline
+            gc.collect()
         report['outcome'] = 'reference_passed_not_application_acceptance'
         save('complete')
         code = 0

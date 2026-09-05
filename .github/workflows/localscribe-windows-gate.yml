@@ -38,11 +38,14 @@ jobs:
         timeout-minutes: 8
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check --only-binary=:all: --index-url https://pypi.org/simple -r localscribe/ci/reference-requirements.txt
+          New-Item -ItemType Directory -Force -Path reference-evidence | Out-Null
+          python -m pip install --report reference-evidence/pip-install.json --disable-pip-version-check --only-binary=:all: --index-url https://pypi.org/simple -r localscribe/ci/reference-requirements.txt
           if ($LASTEXITCODE -ne 0) { throw 'Vendor dependency installation failed' }
           python -m pip check
           if ($LASTEXITCODE -ne 0) { throw 'Vendor dependency consistency failed' }
-      - name: Run one real Japanese CPU inference with the pinned model
+          python -m pip freeze --all | Set-Content -Path reference-evidence/resolved-versions.txt -Encoding UTF8
+          if ($LASTEXITCODE -ne 0) { throw 'Resolved dependency inventory failed' }
+      - name: Verify declared runtime compatibility and CPU cache lifecycle
         timeout-minutes: 23
         shell: pwsh
         run: |

@@ -78,7 +78,9 @@ def write_json(path: Path, value):
 def write_wav(path: Path, x, sr, subtype="PCM_24"):
     tmp = path.with_name(path.stem + ".partial.wav")
     sf.write(tmp, x, sr, subtype=subtype)
-    with tmp.open("rb") as f:
+    # Windows _commit/FlushFileBuffers requires a writable handle. This is
+    # only the audit's own temporary output, never an original audio file.
+    with tmp.open("r+b") as f:
         os.fsync(f.fileno())
     os.replace(tmp, path)
 

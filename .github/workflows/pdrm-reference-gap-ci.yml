@@ -1,0 +1,61 @@
+name: PDRM Reference Gap Addon
+on:
+  push:
+    branches: [pdrm-round9-operator-lab]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/reference_gap.*'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_reference_gap.py'
+      - 'PDRM_Local_Render_Engine_v1/docs/REFERENCE_GAP_GUIDE.md'
+      - '.github/workflows/pdrm-reference-gap-ci.yml'
+permissions:
+  contents: read
+jobs:
+  compare-tests:
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.14'
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: '1'
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: PDRM_Local_Render_Engine_v1/requirements.txt
+      - name: Install existing dependencies
+        run: python -m pip install -r PDRM_Local_Render_Engine_v1/requirements.txt
+      - name: Read-only comparison tests
+        run: python -m unittest discover -s PDRM_Local_Render_Engine_v1/tests -p test_reference_gap.py -v
+      - name: Build addon and Markdown guide
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib, zipfile
+          root=Path('PDRM_Local_Render_Engine_v1')
+          files=['reference_gap.py','reference_gap.cmd','docs/REFERENCE_GAP_GUIDE.md']
+          with zipfile.ZipFile('PDRM_Reference_Gap_AddOn.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for name in files:
+                  z.write(root/name,arcname=Path(name).name)
+          p=Path('PDRM_Reference_Gap_AddOn.zip')
+          Path(str(p)+'.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n',encoding='utf-8')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reference-gap-${{ matrix.os }}-py${{ matrix.python }}
+          retention-days: 30
+          path: |
+            PDRM_Reference_Gap_AddOn.zip
+            PDRM_Reference_Gap_AddOn.zip.sha256
+            PDRM_Local_Render_Engine_v1/docs/REFERENCE_GAP_GUIDE.md

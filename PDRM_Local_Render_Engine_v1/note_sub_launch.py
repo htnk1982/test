@@ -23,7 +23,8 @@ def launch():
             print('PDRM NOTE-FOLLOWING SUB-BASS LAB - EXPERIMENTAL')
             print('Python:',sys.version)
             print('Original C and production engine are not modified. No downloads.')
-            import note_sub_lab as lab
+            import note_sub_lab_v02 as lab
+            print('Lab version:',lab.VERSION)
             import numpy as np
             t=np.arange(768)/4000
             f,p=lab.nsdf_pitch(np.cos(2*np.pi*82.406889*t)+.5*np.cos(4*np.pi*82.406889*t))

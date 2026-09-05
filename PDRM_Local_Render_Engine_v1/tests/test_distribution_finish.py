@@ -87,7 +87,8 @@ class DistributionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Already-processed'):app.run_file(out/app.FILES[1],self.root/'new',write_mp3=False)
     def test_15_same_folder_as_source_is_safe(self):
         h=app.io.file_hash(self.source);_,out=app.run_file(self.source,self.input,write_mp3=False)
-        self.assertEqual(out.parent,self.input);self.assertEqual(h,app.io.file_hash(self.source))
+        # Windows TEMP may use an 8.3 alias; compare directory identity, not its spelling.
+        self.assertTrue(out.parent.samefile(self.input));self.assertEqual(h,app.io.file_hash(self.source))
     def test_16_silence_no_false_completion(self):
         sf.write(self.source,np.zeros((48000,2)),48000,subtype='FLOAT')
         with self.assertRaisesRegex(ValueError,'Silent'):self.run_app(write_mp3=False)
@@ -143,7 +144,7 @@ class DistributionTests(unittest.TestCase):
         sf.write(self.source,np.ones((48000,2))*1.1,48000,subtype='FLOAT')
         with self.assertRaisesRegex(RuntimeError,'clip'):app.write_pcm24(self.source,self.root/'bad.wav')
     def test_29_selected_output_used(self):
-        _,out=self.run_app(write_mp3=False);self.assertEqual(out.parent,self.output)
+        _,out=self.run_app(write_mp3=False);self.assertTrue(out.parent.samefile(self.output))
     def test_30_peak_cache_tied_to_target(self):
         d=self.root/'fit.wav';a=peak.fit(self.source,d,self.root/'fit',-18,-2,self.ff);b=peak.fit(self.source,d,self.root/'fit',-20,-2,self.ff)
         self.assertAlmostEqual(a['output_metrics']['lufs_i'],-18,places=3);self.assertAlmostEqual(b['output_metrics']['lufs_i'],-20,places=3)

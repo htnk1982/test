@@ -34,7 +34,7 @@ jobs:
         with:
           python-version: '3.13.12'
           architecture: x64
-      - name: Build native host and isolated fixed worker, test actual extracted EXEs
+      - name: Build bundle and run bounded lifecycle tests with outbound networking denied
         timeout-minutes: 25
         shell: pwsh
         run: |
@@ -47,6 +47,15 @@ jobs:
           name: localscribe-native-evidence-${{ github.run_id }}
           path: native-evidence/
           if-no-files-found: warn
+          retention-days: 7
+      - name: Retain passed developer candidate, not a product Release
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: localscribe-npu-0.5.0-candidate
+          path: candidate-artifact/
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 7
       - name: Publish scope
         if: always()

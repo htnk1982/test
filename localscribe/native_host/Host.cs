@@ -1,4 +1,4 @@
-// Visible desktop host. Owns one fixed bundled worker; no shell, downloads, recording or process enumeration.
+// Visible desktop host. Owns one fixed bundled worker; no downloads, recording or process enumeration.
 using System;
 using System.IO;
 using System.Text;
@@ -59,7 +59,9 @@ sealed class Host : Form {
     public Dictionary<string, object> Last;
     public Action<string> PhaseSeen;
     readonly Stopwatch uiClock = Stopwatch.StartNew();
-    double lastTick, maxGap;
+    double lastTick, maxGap, startupSeconds;
+    string maxGapPhase="not-started";
+    bool shown;
     readonly System.Windows.Forms.Timer heartbeat = new System.Windows.Forms.Timer();
 
     public Host(string output, bool testing) {
@@ -91,7 +93,12 @@ sealed class Host : Form {
         display.Multiline=true; display.ReadOnly=true; display.ScrollBars=ScrollBars.Vertical; display.Dock=DockStyle.Fill; layout.Controls.Add(display);
         status.Text="0.1〜30秒のWAV／FLACを選択してください。\r\n保存先："+outputRoot; status.Dock=DockStyle.Fill; layout.Controls.Add(status);
         Controls.Add(layout);
-        heartbeat.Interval=50; heartbeat.Tick += delegate { double now=uiClock.Elapsed.TotalSeconds; maxGap=Math.Max(maxGap,now-lastTick); lastTick=now; }; heartbeat.Start();
+        heartbeat.Interval=50; heartbeat.Tick += delegate {
+            double now=uiClock.Elapsed.TotalSeconds;
+            if(shown && now-lastTick>maxGap) {maxGap=now-lastTick;maxGapPhase=phase;}
+            lastTick=now;
+        };
+        Shown += delegate {startupSeconds=uiClock.Elapsed.TotalSeconds;lastTick=startupSeconds;shown=true;heartbeat.Start();};
         FormClosing += delegate(object sender, FormClosingEventArgs e) { if(busy) { e.Cancel=true; closeRequested=true; cancellation="cancelled"; } };
     }
     static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength=262144 }; }
@@ -169,10 +176,12 @@ sealed class Host : Form {
             info.EnvironmentVariables["PYTHONUTF8"]="1"; info.EnvironmentVariables["PYTHONIOENCODING"]="utf-8";
             info.EnvironmentVariables["HF_HUB_OFFLINE"]="1"; info.EnvironmentVariables["HF_HUB_DISABLE_TELEMETRY"]="1";
             job=new OwnedJob(); child=new Process { StartInfo=info };
-            if(!child.Start()) throw new IOException("Worker did not start");
-            job.Attach(child);
+            await Task.Run(delegate {
+                if(!child.Start()) throw new IOException("Worker did not start");
+                job.Attach(child);
+            });
             stdout=ReadBounded(child.StandardOutput,true); stderr=ReadBounded(child.StandardError,false);
-            string request=Json(new {audio=selected,device=chosen,@case=exercise?testCase:"normal",developer_exercise=exercise});
+            string request=String.Concat(Json(new {audio=selected,device=chosen,@case=exercise?testCase:"normal",developer_exercise=exercise}).Select(c=>c>127 ? "\\u"+((int)c).ToString("x4") : c.ToString()));
             await child.StandardInput.WriteAsync(request); child.StandardInput.Close();
             while(!child.HasExited) {
                 if(stdout.IsFaulted||stderr.IsFaulted) throw new IOException("Worker output protocol failed");
@@ -184,6 +193,12 @@ sealed class Host : Form {
             var pipes=Task.WhenAll(stdout,stderr);
             if(await Task.WhenAny(pipes,Task.Delay(2000))!=pipes) throw new IOException("Worker pipes did not close");
             await pipes;
+            if(child.ExitCode!=0 && Last==null) {
+                string detail=stderr.Result;
+                foreach(string p in new[]{selected,activeDir,baseDir,Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)})
+                    if(!String.IsNullOrEmpty(p)) detail=detail.Replace(p,"[local-path]");
+                record["worker_error_detail"]=detail.Length>4000?detail.Substring(detail.Length-4000):detail;
+            }
             record["exit_code"]=child.ExitCode; record["worker_exit_confirmed"]=child.HasExited;
             if(cancellation!=null) {record["outcome"]=cancellation; record["phase"]=phase;}
             else if(Last==null) throw new IOException("WORKER_EXIT_WITHOUT_RESULT: "+child.ExitCode);
@@ -229,10 +244,11 @@ sealed class Host : Form {
         var rows=new List<object>(); string original=Hash(fixture); var saved=new Dictionary<string,string>();
         try {
             Directory.CreateDirectory(evidence);
+            await Task.Delay(100);
             string silence=Path.Combine(Path.GetDirectoryName(fixture),"silence.wav");
             string modelFile=Path.Combine(baseDir,"worker","models","config.json");
-            foreach(string test in new[]{"normal","timeout_native","cancel_native","early_exit","save_obstruction","missing_model","silence","unavailable_npu","recovery"}) {
-                audio.Text=test=="silence"?silence:fixture;
+            foreach(string test in new[]{"normal","stereo_48khz","timeout_native","cancel_native","early_exit","save_obstruction","missing_model","silence","unavailable_npu","recovery"}) {
+                audio.Text=test=="silence"?silence:(test=="stereo_48khz"?Path.Combine(Path.GetDirectoryName(fixture),"stereo.wav"):fixture);
                 device.SelectedItem=test=="unavailable_npu"?"NPU":"CPU";
                 testCase=(test=="timeout_native"||test=="cancel_native")?"native_wait":(test=="early_exit"?"early_exit":"normal");
                 testLimit=test=="timeout_native"?2:120;
@@ -244,8 +260,9 @@ sealed class Host : Form {
                 if(test=="missing_model") File.Move(modelFile,modelFile+".hold");
                 try {start.PerformClick(); await ActiveTask;}
                 finally {if(test=="missing_model") File.Move(modelFile+".hold",modelFile);}
-                string expected=test=="timeout_native"?"timed_out":test=="cancel_native"?"cancelled":(test=="normal"||test=="recovery"?"success":"failed");
+                string expected=test=="timeout_native"?"timed_out":test=="cancel_native"?"cancelled":(test=="normal"||test=="stereo_48khz"||test=="recovery"?"success":"failed");
                 if(Get(Last,"outcome")!=expected) throw new Exception(test+" wrong outcome: "+Json(Last));
+                if((test=="timeout_native"||test=="cancel_native") && Get(Last,"phase")!="native_wait") throw new Exception("Native-wait phase not reached");
                 if(test=="timeout_native" && Convert.ToDouble(Last["elapsed_seconds"])>7) throw new Exception("Timeout exceeded bounded margin");
                 if(test=="cancel_native" && Convert.ToDouble(Last["elapsed_seconds"])>8) throw new Exception("Cancellation exceeded bounded margin");
                 if(expected=="success") {
@@ -256,11 +273,12 @@ sealed class Host : Form {
                 rows.Add(new {name=test,outcome=Get(Last,"outcome"),phase=Get(Last,"phase"),elapsed=Last["elapsed_seconds"],worker_exit=Get(Last,"worker_exit_confirmed")});
             }
             if(Hash(fixture)!=original||saved.Any(p=>Hash(p.Key)!=p.Value)) throw new Exception("Existing input/output changed");
-            if(maxGap>1.5) throw new Exception("UI event loop blocked: "+maxGap);
-            Atomic(Path.Combine(evidence,"native-gui.json"),Json(new {outcome="passed",cases=rows,visible=Visible,maximum_ui_gap=maxGap,input_preserved=true,accepted_outputs_preserved=true,npu_tested=false,live_tested=false}));
+            if(startupSeconds>10) throw new Exception("Window startup exceeded ten seconds: "+startupSeconds);
+            if(maxGap>1.5) throw new Exception("UI event loop blocked: "+maxGap+" phase="+maxGapPhase);
+            Atomic(Path.Combine(evidence,"native-gui.json"),Json(new {outcome="passed",cases=rows,visible=Visible,maximum_ui_gap=maxGap,maximum_ui_gap_phase=maxGapPhase,creation_to_shown_seconds=startupSeconds,input_preserved=true,accepted_outputs_preserved=true,npu_tested=false,live_tested=false}));
             Environment.ExitCode=0;
         } catch(Exception ex) {
-            Atomic(Path.Combine(evidence,"native-gui.json"),Json(new {outcome="failed",error=ex.ToString(),cases=rows})); Environment.ExitCode=1;
+            Atomic(Path.Combine(evidence,"native-gui.json"),Json(new {outcome="failed",error=ex.ToString(),cases=rows,maximum_ui_gap=maxGap,maximum_ui_gap_phase=maxGapPhase,creation_to_shown_seconds=startupSeconds})); Environment.ExitCode=1;
         } finally {PhaseSeen=null;Close();}
     }
     [STAThread] static int Main(string[] args) {

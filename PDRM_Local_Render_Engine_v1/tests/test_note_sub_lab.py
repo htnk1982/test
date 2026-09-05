@@ -50,6 +50,13 @@ class NoteSubDSP(unittest.TestCase):
         j=self.root/'job';(j/'analysis').mkdir(parents=True,exist_ok=True)
         rows,cache=lab.collect_frames(p,j,lab.Progress())
         return rows,p,cache
+    def assert_pcm_equal(self,a,b):
+        # WAV metadata can contain time stamps. Do not confuse file identity with PCM identity.
+        xa,sa=sf.read(a,dtype='float64',always_2d=True)
+        xb,sb=sf.read(b,dtype='float64',always_2d=True)
+        self.assertEqual(sa,sb);self.assertEqual(xa.shape,xb.shape)
+        self.assertTrue(np.array_equal(xa,xb),'Decoded PCM differs; no tolerance allowed')
+        self.assertEqual(lab.pcm_hash(a),lab.pcm_hash(b))
     def test_01_nsdf_continuous_frequency(self):
         sr=4000;t=np.arange(768)/sr
         for hz in (32.7,41.2,55.3,82.406889,97.998859,123.47,164.81):
@@ -147,7 +154,7 @@ class NoteSubDSP(unittest.TestCase):
             lab.render(p,j,[e],lab.Progress(),1,label='x',interrupt_after=1)
         resumed,c=lab.render(p,j,[e],lab.Progress(),1,label='x')
         clean,_=lab.render(p,j,[e],lab.Progress(),1,label='clean')
-        self.assertGreater(c['reused_chunks'],0);self.assertEqual(lab.file_hash(resumed),lab.file_hash(clean))
+        self.assertGreater(c['reused_chunks'],0);self.assert_pcm_equal(resumed,clean)
     def test_22_invalid_nonfinite_rejected(self):
         x=np.zeros(2000);x[30]=np.nan
         with self.assertRaises(ValueError):lab.finite(x)
@@ -196,7 +203,7 @@ class NoteSubDSP(unittest.TestCase):
         self.assertFalse(any(work.glob('*/RESULT')))
         resumed,o1=lab.run_job(p,work,write_mp3=False)
         clean,o2=lab.run_job(p,self.root/'cleanwork',write_mp3=False)
-        self.assertEqual(lab.file_hash(o1/'SUB_AUGMENTED.wav'),lab.file_hash(o2/'SUB_AUGMENTED.wav'))
+        self.assert_pcm_equal(o1/'SUB_AUGMENTED.wav',o2/'SUB_AUGMENTED.wav')
         self.assertGreater(resumed['analysis_cache']['reused_chunks'],0)
     def test_28_existing_sub_noop_is_bit_exact(self):
         x,sr=notes(frequencies=(41.2034445,));p=self.input_file('low.wav',x,sr)
@@ -221,8 +228,13 @@ class NoteSubDSP(unittest.TestCase):
     def test_32_source_directory_protection_retained(self):
         x,sr=notes(frequencies=(82.4,));p=self.input_file('protected.wav',x,sr)
         with self.assertRaisesRegex(ValueError,'outside'):
-            lab.run_job(p,self.inputs/'output',write_mp3=False)
-        self.assertFalse((self.inputs/'output').exists())
+            lab.run_job(p,self.inputs/'not_allowed',write_mp3=False)
+    def test_33_pcm_hash_excludes_container_but_detects_sample_change(self):
+        x,sr=notes(frequencies=(82.4,));a=self.input_file('pcm.wav',x,sr)
+        b=self.inputs/'pcm.aiff';sf.write(b,x,sr,format='AIFF',subtype='FLOAT')
+        self.assertNotEqual(lab.file_hash(a),lab.file_hash(b));self.assert_pcm_equal(a,b)
+        x[100,0]+=1e-5;c=self.input_file('changed.wav',x,sr)
+        self.assertNotEqual(lab.pcm_hash(a),lab.pcm_hash(c))
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -3,6 +3,7 @@ import json,sys,tempfile,unittest
 from unittest.mock import patch
 import numpy as np
 import soundfile as sf
+from scipy import signal
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import offline_peak_lab as old
 import offline_peak_stream as stream0
@@ -23,14 +24,14 @@ def gentle(seconds=.8):
 
 def broad(seconds=.8):
     t=np.arange(round(SR*seconds))/SR;x=gentle(seconds)
-    for when in (.17,.39,.58):x+=.86*np.exp(-.5*((t-when)/.000055)**2)[:,None]
+    # One broader crest models the field failure without conflating several
+    # independent events into one rescue region.
+    when=min(.39,seconds*.55);x+=.86*np.exp(-.5*((t-when)/.000055)**2)[:,None]
     return x
 
 class ContextSolver(unittest.TestCase):
     def test_context_reduces_peak_and_passes_local_gates(self):
-        r=np.repeat(broad(.256),4,axis=0)[:round(.256*SR*4)]
-        # Use interpolation-like high-rate input; force a crest over the box.
-        ceiling=.78
+        native=broad(.256);r=signal.resample_poly(native,4,1,axis=0,window=('kaiser',10.5));ceiling=.78
         y,st=ctx.solve_context(r,SR*4,ceiling,old.Config())
         self.assertTrue(st['active']);self.assertLessEqual(np.max(abs(y)),ceiling+2e-10)
         self.assertTrue(all(st['local_metrics']['gates'].values()))
@@ -58,8 +59,6 @@ class WholeTrackV32(unittest.TestCase):
         xa,_=sf.read(a,dtype='float64',always_2d=True);xb,_=sf.read(b,dtype='float64',always_2d=True)
         np.testing.assert_array_equal(xa,xb);self.assertEqual(st['context_rescue_regions'],0)
     def test_context_rescues_broader_transient_class(self):
-        # v3.1 is intentionally shown with its independent local gate tightened:
-        # this reproduces the exact second-stage failure class from the field log.
         import offline_peak_rescue as r31
         with self.assertRaises(old.NotFeasible):
             stream1.render_fixed_gain(self.b,self.root/'v31',2.4,10**(-2.2/20),

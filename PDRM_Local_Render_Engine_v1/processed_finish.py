@@ -52,18 +52,20 @@ def output_paths(source: Path) -> tuple[Path, dict[str, Path]]:
     return folder, {ext: folder / (source.stem + '.' + ext) for ext in ('wav', 'mp3')}
 
 
-def request_identity(source: Path, targets=None) -> dict:
+def request_identity(source: Path, targets=None, backend=None) -> dict:
+    selected = backend or engine
     targets = (targets if targets is not None else Targets()).validate()
     engine.legacy.verify_dsp()
     modules = ('distribution_finish.py', 'distribution_peak.py', 'accepted_finish.py',
                'note_sub_lab.py', 'note_sub_lab_v02.py', 'hf_temporal_contrast_lab.py', 'target_settings.py')
+    modules = getattr(selected, 'IDENTITY_MODULES', modules)
     code = {name: hashlib.sha256(Path(__file__).with_name(name).read_text(encoding='utf-8-sig').encode('utf-8')).hexdigest()
             for name in modules}
     ff = io.ffmpeg_path()
     if not ff:
         raise RuntimeError('Existing FFmpeg not found; nothing was installed')
     return dict(source_name=source.name, source_sha256=io.file_hash(source),
-                engine_version=engine.VERSION, code=code,
+                engine_version=selected.VERSION, code=code,
                 versions={n: importlib.metadata.version(n) for n in ('numpy','scipy','soundfile','pyloudnorm')},
                 ffmpeg_sha256=io.file_hash(ff),
                 targets=dict(wav_lufs=targets.wav_lufs, wav_tp_ceiling=targets.wav_tp,
@@ -107,11 +109,13 @@ def _check_replacement(folder, paths, new_files, old_files):
             raise RuntimeError('Name conflict or modified file; nothing overwritten: '+str(p))
 
 
-def run_file(source, work_root=None, *, interrupt_after=None, targets=None, replace_managed=False) -> tuple[dict, Path]:
+def run_file(source, work_root=None, *, interrupt_after=None, targets=None, replace_managed=False, backend=None) -> tuple[dict, Path]:
+    selected = backend or engine
     source = Path(source).absolute()
     folder, paths = output_paths(source)
     if targets is not None: targets.validate()
-    request = request_identity(source) if targets is None else request_identity(source, targets)
+    request = (request_identity(source, targets, backend=backend) if backend is not None else
+               (request_identity(source) if targets is None else request_identity(source, targets)))
     work = Path(work_root) if work_root is not None else default_work_root()
     work = work.resolve()
     # Keep rendering and its large intermediate files out of the public folder.
@@ -153,20 +157,20 @@ def run_file(source, work_root=None, *, interrupt_after=None, targets=None, repl
 
         kwargs = dict(write_mp3=True)
         if targets is not None: kwargs['targets'] = targets
-        report, final = engine.run_file(source, work, **kwargs)
+        report, final = selected.run_file(source, work, **kwargs)
         if (report.get('status') != 'COMPLETE' or not report.get('source_unchanged') or
                 report.get('identity', {}).get('source_sha256') != request['source_sha256'] or
                 io.file_hash(source) != request['source_sha256']):
             raise RuntimeError('Engine/source verification failed; nothing published')
-        engine.verify_final(final, report['identity'])
-        originals = {paths['wav'].name: final / engine.FILES[0], paths['mp3'].name: final / engine.FILES[2]}
+        selected.verify_final(final, report['identity'])
+        originals = {paths['wav'].name: final / selected.FILES[0], paths['mp3'].name: final / selected.FILES[2]}
         hashes = {name: io.file_hash(p) for name, p in originals.items()}
         if expected is not None and not (replacing and saved['status']=='COMPLETE') and hashes != expected:
             raise RuntimeError('Verified render differs from interrupted output; nothing overwritten')
         receipt = dict(version=VERSION, status='PUBLISHING', request=request, files=hashes,
                        render_result=str(final), master_metrics=report['master_metrics'],
                        codec_metrics=report['codec_metrics'],
-                       chain='HarmonicElasticity -> peak preparation -> Note-Sub -> HFTC -> release peak/gain',
+                       chain=report.get('chain', 'HarmonicElasticity -> peak preparation -> Note-Sub -> HFTC -> release peak/gain'),
                        mp3_source='verified engine MP3 input WAV; no re-encoding by publisher')
         if replacing:
             if saved['status'] == 'REPLACING':
@@ -243,7 +247,7 @@ def choose_sources(sources):
         app.destroy()
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, backend=None, default_root=None) -> int:
     parser = argparse.ArgumentParser(description='Same-name WAV/MP3 in each source folder/processed')
     parser.add_argument('sources', nargs='*', type=Path)
     parser.add_argument('--work-root', type=Path, help='Internal render cache only; not the audio destination')
@@ -272,7 +276,9 @@ def main(argv=None) -> int:
             key = (str(source.absolute().parent.resolve()).casefold(), source.stem.casefold())
             if key in conflicts:
                 raise RuntimeError('同じフォルダに同名のWAV/FLACが選ばれています。どちらか一方を選んでください。')
-            result, folder = run_file(source, args.work_root, targets=targets, replace_managed=args.replace_managed)
+            kwargs = dict(targets=targets, replace_managed=args.replace_managed)
+            if backend is not None: kwargs['backend'] = backend
+            result, folder = run_file(source, args.work_root or default_root, **kwargs)
             print('確認済み（再処理なし）:' if result.get('rerun_status') else '完了:', folder, flush=True)
             for name in result['files']:
                 print(' ', folder / name, flush=True)

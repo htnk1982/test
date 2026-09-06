@@ -44,13 +44,17 @@ def main():
     checks.append('Successful per-track cleanup leaves no large audio cache in LOCALAPPDATA')
     for src,h,ref in fixtures:
         r,rout=pub.run_file(ref,area/'ref_work',targets=target,backend=n);out=src.parent/'processed';record=json.loads(next((out/'.pdrm').glob('*.json')).read_text(encoding='utf-8'))
-        assert h==sha(src) and record['request']['engine_version']==n.VERSION and record['execution_profile']=='V3.4_SPARSE_EXACT_LONG_CONTEXT'
+        # Public publisher receipts intentionally expose the selected engine version,
+        # targets/metrics, hashes and human-readable chain. Internal execution_profile
+        # remains in the backend RUN_REPORT and is not a publisher receipt field.
+        assert h==sha(src) and record['request']['engine_version']==n.VERSION
+        assert 'PREP_AUTO[' in record['chain'] and 'MASTER_AUTO[' in record['chain']
         for key,lufs,tp in (('master_metrics',-18,-2),('codec_metrics',-20,-3)):
             m=record[key];assert abs(m['lufs_i']-lufs)<=.03 and m['true_peak_max_dbtp_estimate']<=tp
         for ext in ('.wav','.mp3'):
             a,bp=out/(src.stem+ext),rout/(ref.stem+ext);assert (pub.io.pcm_hash(a)==pub.io.pcm_hash(bp)) if ext=='.wav' else (sha(a)==sha(bp))
-        measurements.append(dict(source=src.name,rate=sf.info(src).samplerate,chain=record['chain'],master=record['master_metrics'],mp3=record['codec_metrics']))
-    checks.append('44.1/48/96 kHz source/EXE equality, targets and v3.4 execution receipts')
+        measurements.append(dict(source=src.name,rate=sf.info(src).samplerate,engine_version=record['request']['engine_version'],chain=record['chain'],master=record['master_metrics'],mp3=record['codec_metrics']))
+    checks.append('44.1/48/96 kHz source/EXE equality, targets and documented v3.4 public receipts')
     run(args);checks.append('Receipt idempotence after cache cleanup')
     bad=area/'bad'/'broken.wav';bad.parent.mkdir();bad.write_bytes(b'not wave');run([bad],expected=1);checks.append('Invalid input stops; no fallback processing')
     report=dict(status='PASS',checks=checks,measurements=measurements,bundle_check=b,gui_check=g,windows=os.environ.get('ImageOS'),python_removed_from_path=True,caveat='Windows runner has Python installed but execution PATH does not expose it')

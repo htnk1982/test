@@ -24,8 +24,12 @@ def track(seconds=.75,sharp=True):
     x=np.column_stack((.10*np.sin(2*np.pi*83*t)+.08*np.sin(2*np.pi*770*t),
                        .095*np.sin(2*np.pi*83*t)+.07*np.sin(2*np.pi*820*t)))
     if sharp:
+        # Narrow crests intentionally fail the old 1 ms-RMS pointwise allowance,
+        # while their total block energy is small enough to remain inside the
+        # independent rescue residual/energy guards. This models the reported
+        # failure mechanism rather than manufacturing a broad overload.
         for when in (.17,.39,.58):
-            x+=1.0*np.exp(-.5*((t-when)/.00006)**2)[:,None]
+            x+=.70*np.exp(-.5*((t-when)/.00002)**2)[:,None]
     x[:100]=0;x[-100:]=0
     return x
 

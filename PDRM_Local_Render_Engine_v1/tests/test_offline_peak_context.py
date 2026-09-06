@@ -12,6 +12,7 @@ import offline_peak_stream_v32 as stream2
 import offline_peak_context as ctx
 import workspace_cleanup as clean
 import processed_finish_v32 as pub32
+import natural_finish_v32 as natural32
 
 SR=48000
 
@@ -24,8 +25,6 @@ def gentle(seconds=.8):
 
 def broad(seconds=.8):
     t=np.arange(round(SR*seconds))/SR;x=gentle(seconds)
-    # One broader crest models the field failure without conflating several
-    # independent events into one rescue region.
     when=min(.39,seconds*.55);x+=.86*np.exp(-.5*((t-when)/.000055)**2)[:,None]
     return x
 
@@ -78,8 +77,9 @@ class Cleanup(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);self.src=self.root/'song.wav'
         sf.write(self.src,gentle(.5),SR,subtype='FLOAT');self.sha=clean.io.file_hash(self.src)
     def tearDown(self):self.tmp.cleanup()
-    def make_job(self,version='old'):
-        d=self.root/'work'/'.oppo_work_v3'/'job';d.mkdir(parents=True)
+    def make_job(self,version='old',root=None):
+        base=Path(root) if root is not None else self.root/'work'
+        d=base/'.oppo_work_v3'/'job';d.mkdir(parents=True)
         (d/'identity.json').write_text(json.dumps(dict(source_sha256=self.sha,version=version)),encoding='utf-8')
         (d/'large.wav').write_bytes(b'0'*1024*1024);return d
     def test_success_cleanup_removes_large_job(self):
@@ -95,6 +95,16 @@ class Cleanup(unittest.TestCase):
     def test_prestart_deletes_old_version(self):
         d=self.make_job('natural-finish-3.1.0');clean.cleanup_source(self.root/'work',self.src,current_version='natural-finish-3.2.0',prestart=True)
         self.assertFalse(d.exists())
+    def test_v32_prestart_reclaims_matching_v30_v31_only(self):
+        parent=self.root/'localapp';cur=parent/'oppo_finish_v32'
+        old3=self.make_job('natural-finish-3.0.0',parent/'oppo_finish_v3')
+        old31=self.make_job('natural-finish-3.1.0',parent/'oppo_finish_v31')
+        other=parent/'oppo_finish_v3'/'.oppo_work_v3'/'other';other.mkdir(parents=True)
+        (other/'identity.json').write_text(json.dumps(dict(source_sha256='not-this-source',version='natural-finish-3.0.0')),encoding='utf-8')
+        (other/'large.wav').write_bytes(b'1'*1024)
+        r=natural32.cleanup_source_workspace(self.src,cur,prestart=True)
+        self.assertFalse(old3.exists());self.assertFalse(old31.exists());self.assertTrue(other.exists())
+        self.assertGreaterEqual(r['bytes_freed'],2*1024*1024)
     def test_publisher_calls_cleanup_per_item(self):
         class Backend:
             VERSION='b';IDENTITY_MODULES=();calls=[]

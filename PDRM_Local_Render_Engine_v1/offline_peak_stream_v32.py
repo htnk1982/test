@@ -18,7 +18,7 @@ import offline_peak_stream as base
 import offline_peak_context as context
 import note_sub_lab as io
 
-VERSION='offline-peak-stream-0.4.0'
+VERSION='offline-peak-stream-0.4.1'
 MAX_SECONDS=base.MAX_SECONDS
 verify_kernel=base.verify_kernel
 validate_source=base.validate_source
@@ -31,7 +31,10 @@ _shape=base._shape
 
 def _clusters(starts,n,length,sr):
     starts=sorted(set(int(s) for s in starts));out=[]
-    merge_gap=round(.256*sr)
+    # Adjacent/overlapping rejected v0.1 frames belong to one physical crest.
+    # Distant events remain independent even though the rescue may inspect a
+    # longer surrounding context for each of them.
+    merge_gap=round(.064*sr)
     for s in starts:
         a=max(0,s);b=min(length,s+n)
         if not out or a-out[-1][1]>merge_gap:out.append([a,b])
@@ -55,6 +58,15 @@ def _read_upsampled(f,a,b,q):
     up=signal.resample_poly(buf,q,1,axis=0,window=('kaiser',10.5))[(a-l)*q:(b-l)*q]
     native=buf[a-l:b-l]
     return native,up
+
+
+def _reconstructed_patch(pf,a,b,candidate,q):
+    """Measure the real native patch with surrounding unchanged file context."""
+    left=max(0,a-64);right=min(pf.frames,b+64);pf.seek(left)
+    buf=pf.read(right-left,dtype='float64',always_2d=True);io.finite(buf)
+    buf[a-left:b-left]=candidate
+    high=signal.resample_poly(buf,q,1,axis=0,window=('kaiser',10.5))
+    return high[(a-left)*q:(b-left)*q]
 
 
 def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
@@ -118,7 +130,8 @@ def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
     if not failures:
         return provisional,dict(computed_chunks=computed,reused_chunks=reused,active_frame_evaluations=active,
             total_iterations=iters,max_projected_gradient=max_pg,old_infeasible_frames=0,context_rescue_regions=0,
-            context_rescue_contexts_ms=[],audio_buffer_seconds=width/info.samplerate+2*n/info.samplerate+.003,
+            context_rescue_contexts_ms=[],native_tp_refinements=0,
+            audio_buffer_seconds=width/info.samplerate+2*n/info.samplerate+.003,
             chunk_width_frames=width,global_frame_length=n)
     patched=directory/'CONTEXT_PATCHED.wav';patch_marker=directory/'CONTEXT_PATCHED.json'
     rescue_id=dict(provisional=io.file_hash(provisional),failures=failures,context_config=asdict(context_cfg),ceiling=ceiling)
@@ -133,12 +146,31 @@ def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
                     try:
                         a,b=_context_bounds(fa,fb,length,info.samplerate,ms,context_cfg.edge_guard_ms)
                         native,up=_read_upsampled(pf,a,b,q);locked=np.zeros_like(up,dtype=bool);locked[::q]=native==0
-                        y,st=context.solve_context(up,info.samplerate*q,ceiling,cfg,locked=locked,cfg=context_cfg)
-                        d=(y-up)[::q];candidate=native+d;candidate[native==0]=0.
-                        # Rebuild and test the actual native patch before committing it.
-                        test_up=signal.resample_poly(candidate,q,1,axis=0,window=('kaiser',10.5))
-                        if float(np.max(np.abs(test_up)))>ceiling+2e-4:raise kernel.NotFeasible('Native reconstruction exceeded internal context ceiling')
-                        accepted=(a,b,candidate,dict(st,context_ms=float(ms),start=a/info.samplerate,end=b/info.samplerate));break
+                        local_ceiling=ceiling
+                        for refine in range(5):
+                            y,st=context.solve_context(up,info.samplerate*q,local_ceiling,cfg,locked=locked,cfg=context_cfg)
+                            d=(y-up)[::q];candidate=native+d;candidate[native==0]=0.
+                            test_up=_reconstructed_patch(pf,a,b,candidate,q)
+                            reconstructed_peak=float(np.max(np.abs(test_up)))
+                            reconstructed_metrics=context._metrics(up,test_up,info.samplerate*q,context_cfg)
+                            if reconstructed_peak<=ceiling+2e-4 and all(reconstructed_metrics['gates'].values()):
+                                accepted=(a,b,candidate,dict(st,context_ms=float(ms),start=a/info.samplerate,end=b/info.samplerate,
+                                    requested_ceiling=float(ceiling),solver_ceiling=float(local_ceiling),
+                                    native_reconstruction_peak=reconstructed_peak,native_tp_refinements=refine,
+                                    native_local_metrics=reconstructed_metrics));break
+                            if reconstructed_peak>ceiling+2e-4:
+                                # The 4x constrained field can reacquire a small
+                                # intersample peak after returning to native rate.
+                                # Re-solve from the SAME reference with a lower
+                                # internal box; never clip the already processed
+                                # candidate and never feed it back as a source.
+                                ratio=reconstructed_peak/max(ceiling,1e-15)
+                                local_ceiling=local_ceiling/ratio*10**(-.03/20)
+                                if local_ceiling<=0:raise kernel.NotFeasible('Native TP refinement produced invalid ceiling')
+                                continue
+                            raise kernel.NotFeasible('Native reconstruction naturalness gate failed: '+str(reconstructed_metrics['gates']))
+                        if accepted is not None:break
+                        raise kernel.NotFeasible('Native TP refinement budget exhausted')
                     except kernel.NotFeasible as exc:last=exc
                 if accepted is None:
                     raise kernel.NotFeasible(f'Long-context rescue failed around {fa/info.samplerate:.3f}-{fb/info.samplerate:.3f}s after {context_cfg.contexts_ms}: {last}. No limiter fallback.')
@@ -149,6 +181,7 @@ def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
     return patched,dict(computed_chunks=computed,reused_chunks=reused,active_frame_evaluations=active,total_iterations=iters,
         max_projected_gradient=max_pg,old_infeasible_frames=len(failures),context_rescue_regions=len(rescue_records),
         context_rescue_contexts_ms=[r['context_ms'] for r in rescue_records],
+        native_tp_refinements=sum(r.get('native_tp_refinements',0) for r in rescue_records),
         audio_buffer_seconds=max(width/info.samplerate+2*n/info.samplerate+.003,max(context_cfg.contexts_ms)/1000),
         chunk_width_frames=width,global_frame_length=n)
 

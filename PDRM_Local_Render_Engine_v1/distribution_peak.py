@@ -17,7 +17,7 @@ from scipy import signal
 import note_sub_lab as io
 import hf_temporal_contrast_lab as hf
 
-VERSION = 'distribution-peak-1.0.0'
+VERSION = 'distribution-peak-1.0.1'
 
 @dataclass(frozen=True)
 class PeakConfig:
@@ -169,7 +169,19 @@ def fit(source: Path, dest: Path, work: Path, target: float, ceiling: float,
                 break
             # More input drive compensates loudness lost to peak reduction.
             # If SRC overshoot itself dominates, lower the internal limiter cap.
-            gain_db += max(.05, correction)
+            step = max(.05, correction)
+            # With a tighter user ceiling, a strongly limited signal may change
+            # much less than 1 LU per dB of input drive. Estimate that response
+            # from two measured passes instead of crawling in tiny increments.
+            # This changes only solver drive, not the limiter transfer/timing.
+            if i >= 2 and correction > 0:
+                previous = trials[-2]
+                dx = gain_db - previous['input_gain_db']
+                dy = m['lufs_i'] - previous['metrics']['lufs_i']
+                slope = dy / dx if dx > 1e-6 else 0.0
+                if .02 <= slope <= 1.0:
+                    step = max(step, min(3.0, .8 * correction / slope))
+            gain_db += step
             overshoot = m['true_peak_max_dbtp_estimate'] - limit_db
             if overshoot > cfg.ceiling_margin_db:
                 limit_db -= min(.5, overshoot - cfg.ceiling_margin_db + .05)

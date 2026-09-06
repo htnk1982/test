@@ -13,10 +13,12 @@ import shutil
 import sys
 import tempfile
 import traceback
+import uuid
+from target_settings import Targets
 
 import distribution_finish as engine
 
-VERSION = 'processed-finish-2.1.0'
+VERSION = 'processed-finish-2.2.0'
 io = engine.io
 
 
@@ -50,10 +52,11 @@ def output_paths(source: Path) -> tuple[Path, dict[str, Path]]:
     return folder, {ext: folder / (source.stem + '.' + ext) for ext in ('wav', 'mp3')}
 
 
-def request_identity(source: Path) -> dict:
+def request_identity(source: Path, targets=None) -> dict:
+    targets = (targets if targets is not None else Targets()).validate()
     engine.legacy.verify_dsp()
     modules = ('distribution_finish.py', 'distribution_peak.py', 'accepted_finish.py',
-               'note_sub_lab.py', 'note_sub_lab_v02.py', 'hf_temporal_contrast_lab.py')
+               'note_sub_lab.py', 'note_sub_lab_v02.py', 'hf_temporal_contrast_lab.py', 'target_settings.py')
     code = {name: hashlib.sha256(Path(__file__).with_name(name).read_text(encoding='utf-8-sig').encode('utf-8')).hexdigest()
             for name in modules}
     ff = io.ffmpeg_path()
@@ -63,7 +66,8 @@ def request_identity(source: Path) -> dict:
                 engine_version=engine.VERSION, code=code,
                 versions={n: importlib.metadata.version(n) for n in ('numpy','scipy','soundfile','pyloudnorm')},
                 ffmpeg_sha256=io.file_hash(ff),
-                targets=dict(wav_lufs=-12.0, wav_tp_ceiling=-2.0, mp3_lufs=-14.0))
+                targets=dict(wav_lufs=targets.wav_lufs, wav_tp_ceiling=targets.wav_tp,
+                             mp3_lufs=targets.mp3_lufs, mp3_tp_ceiling=targets.mp3_tp))
 
 
 def _check_outputs(folder: Path, paths: dict[str, Path], expected: dict | None) -> None:
@@ -92,10 +96,22 @@ def _install_new(temp: Path, dest: Path) -> None:
         temp.unlink()
 
 
-def run_file(source, work_root=None, *, interrupt_after=None) -> tuple[dict, Path]:
+def _check_replacement(folder, paths, new_files, old_files):
+    # During an interrupted replacement only the journal's old/new exact bytes
+    # may be present. Any user edit still blocks replacement.
+    existing = {p.name.casefold(): p for p in folder.iterdir()}
+    for dest in paths.values():
+        p = existing.get(dest.name.casefold())
+        if p is not None and (p.name != dest.name or _redirected(p) or not p.is_file() or
+                io.file_hash(p) not in (new_files.get(dest.name), old_files.get(dest.name))):
+            raise RuntimeError('Name conflict or modified file; nothing overwritten: '+str(p))
+
+
+def run_file(source, work_root=None, *, interrupt_after=None, targets=None, replace_managed=False) -> tuple[dict, Path]:
     source = Path(source).absolute()
     folder, paths = output_paths(source)
-    request = request_identity(source)
+    if targets is not None: targets.validate()
+    request = request_identity(source) if targets is None else request_identity(source, targets)
     work = Path(work_root) if work_root is not None else default_work_root()
     work = work.resolve()
     # Keep rendering and its large intermediate files out of the public folder.
@@ -111,17 +127,33 @@ def run_file(source, work_root=None, *, interrupt_after=None) -> tuple[dict, Pat
         raise RuntimeError('Linked state file refused')
     with io.job_lock(lock):
         saved = None
+        replacing = False
         if marker.exists():
             saved = io.read_json(marker)
-            if (saved.get('request') != request or saved.get('status') not in ('PUBLISHING','COMPLETE') or
+            if (saved.get('status') not in ('PUBLISHING','COMPLETE','REPLACING') or
                     set(saved.get('files', {})) != {p.name for p in paths.values()}):
                 raise RuntimeError('Existing output belongs to another source/settings; nothing overwritten')
+            if saved.get('request') != request:
+                old = saved.get('request', {})
+                same_source = (old.get('source_name') == request['source_name'] and
+                               old.get('source_sha256') == request['source_sha256'])
+                if not (replace_managed and same_source and saved['status'] == 'COMPLETE'):
+                    raise RuntimeError('Existing output belongs to another source/settings; nothing overwritten. '
+                                       '設定変更後の再作成は「既存出力を退避して作り直す」を選んでください。')
+                replacing = True
+            elif saved['status'] == 'REPLACING':
+                replacing = True
         expected = saved['files'] if saved else None
-        _check_outputs(folder, paths, expected)
-        if saved and saved['status'] == 'COMPLETE' and all(p.exists() for p in paths.values()):
+        if saved and saved['status'] == 'REPLACING':
+            _check_replacement(folder, paths, expected, saved['old_files'])
+        else:
+            _check_outputs(folder, paths, expected)
+        if not replacing and saved and saved['status'] == 'COMPLETE' and all(p.exists() for p in paths.values()):
             return dict(saved, rerun_status='IDEMPOTENT_SKIP'), folder
 
-        report, final = engine.run_file(source, work, write_mp3=True)
+        kwargs = dict(write_mp3=True)
+        if targets is not None: kwargs['targets'] = targets
+        report, final = engine.run_file(source, work, **kwargs)
         if (report.get('status') != 'COMPLETE' or not report.get('source_unchanged') or
                 report.get('identity', {}).get('source_sha256') != request['source_sha256'] or
                 io.file_hash(source) != request['source_sha256']):
@@ -129,20 +161,49 @@ def run_file(source, work_root=None, *, interrupt_after=None) -> tuple[dict, Pat
         engine.verify_final(final, report['identity'])
         originals = {paths['wav'].name: final / engine.FILES[0], paths['mp3'].name: final / engine.FILES[2]}
         hashes = {name: io.file_hash(p) for name, p in originals.items()}
-        if expected is not None and hashes != expected:
+        if expected is not None and not (replacing and saved['status']=='COMPLETE') and hashes != expected:
             raise RuntimeError('Verified render differs from interrupted output; nothing overwritten')
         receipt = dict(version=VERSION, status='PUBLISHING', request=request, files=hashes,
                        render_result=str(final), master_metrics=report['master_metrics'],
                        codec_metrics=report['codec_metrics'],
                        chain='HarmonicElasticity -> peak preparation -> Note-Sub -> HFTC -> release peak/gain',
-                       mp3_source='engine LISTEN_14LUFS.wav; no re-encoding by publisher')
-        _check_outputs(folder, paths, expected)
+                       mp3_source='verified engine MP3 input WAV; no re-encoding by publisher')
+        if replacing:
+            if saved['status'] == 'REPLACING':
+                backup = Path(saved['backup'])
+                old_files = saved['old_files']
+                _check_replacement(folder, paths, hashes, old_files)
+                for name, expected_hash in old_files.items():
+                    old_copy = backup/name
+                    if old_copy.exists() and io.file_hash(old_copy) != expected_hash:
+                        raise RuntimeError('Backup modified; nothing overwritten')
+            else:
+                _check_outputs(folder, paths, expected)
+                backups = meta/'backups'
+                _plain_dir(backups)
+                backup = backups/(key+'_'+uuid.uuid4().hex[:12])
+                backup.mkdir()
+                old_files = dict(expected)
+                for name, expected_hash in old_files.items():
+                    original = folder/name
+                    if original.exists():
+                        shutil.copy2(original, backup/name)
+                        if io.file_hash(backup/name) != expected_hash:
+                            raise RuntimeError('Backup verification failed; current output preserved')
+                        io.sync_owned_file(backup/name)
+                io.atomic_json(backup/'receipt.json', saved)
+            receipt.update(status='REPLACING', old_files=old_files, backup=str(backup))
+        else:
+            _check_outputs(folder, paths, expected)
         io.atomic_json(marker, receipt)
         # All backend WAV and MP3 QC has succeeded before either is exposed here.
         for i, (name, original) in enumerate(originals.items(), 1):
             dest = folder / name
-            _check_outputs(folder, paths, hashes)
-            if not dest.exists():
+            if replacing:
+                _check_replacement(folder, paths, hashes, old_files)
+            else:
+                _check_outputs(folder, paths, hashes)
+            if not dest.exists() or (replacing and io.file_hash(dest) != hashes[name]):
                 fd, name_tmp = tempfile.mkstemp(prefix=key + '_', suffix='.partial', dir=meta)
                 temp = Path(name_tmp)
                 try:
@@ -151,7 +212,11 @@ def run_file(source, work_root=None, *, interrupt_after=None) -> tuple[dict, Pat
                         target.flush(); os.fsync(target.fileno())
                     if io.file_hash(temp) != hashes[name]:
                         raise RuntimeError('Copy verification failed')
-                    _install_new(temp, dest)
+                    if replacing and dest.exists():
+                        _check_replacement(folder, paths, hashes, old_files)
+                        os.replace(temp, dest)
+                    else:
+                        _install_new(temp, dest)
                 finally:
                     temp.unlink(missing_ok=True)
             if interrupt_after == i:
@@ -182,7 +247,14 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Same-name WAV/MP3 in each source folder/processed')
     parser.add_argument('sources', nargs='*', type=Path)
     parser.add_argument('--work-root', type=Path, help='Internal render cache only; not the audio destination')
+    for field in ('wav-lufs', 'wav-tp', 'mp3-lufs', 'mp3-tp'):
+        parser.add_argument('--'+field, type=float)
+    parser.add_argument('--replace-managed', action='store_true')
     args = parser.parse_args(argv)
+    fields = {k:getattr(args,k) for k in Targets().to_dict()}
+    targets = None
+    if any(v is not None for v in fields.values()):
+        targets = Targets(**{k:(v if v is not None else getattr(Targets(),k)) for k,v in fields.items()}).validate()
     sources = choose_sources(args.sources)
     if not sources:
         print('中止しました。原音は変更していません。'); return 0
@@ -200,7 +272,7 @@ def main(argv=None) -> int:
             key = (str(source.absolute().parent.resolve()).casefold(), source.stem.casefold())
             if key in conflicts:
                 raise RuntimeError('同じフォルダに同名のWAV/FLACが選ばれています。どちらか一方を選んでください。')
-            result, folder = run_file(source, args.work_root)
+            result, folder = run_file(source, args.work_root, targets=targets, replace_managed=args.replace_managed)
             print('確認済み（再処理なし）:' if result.get('rerun_status') else '完了:', folder, flush=True)
             for name in result['files']:
                 print(' ', folder / name, flush=True)

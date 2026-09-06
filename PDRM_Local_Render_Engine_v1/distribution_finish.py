@@ -26,8 +26,9 @@ import note_sub_lab as io
 import note_sub_lab_v02 as ns
 import hf_temporal_contrast_lab as hf
 import distribution_peak as peak
+from target_settings import Targets
 
-VERSION = 'distribution-finish-2.0.0'
+VERSION = 'distribution-finish-2.2.0'
 MASTER_LUFS, MASTER_TP, LISTEN_LUFS = -12.0, -2.0, -14.0
 PREP_LUFS, PREP_TP = -14.0, -2.5
 FILES = ('MASTER_12LUFS.wav', 'LISTEN_14LUFS.wav', 'LISTEN_14LUFS_320kbps.mp3')
@@ -125,7 +126,74 @@ def register(root, report):
                        dict(version=VERSION, pcm_sha256=sha))
 
 
-def _run_file(source, root, *, write_mp3=True, interrupt_after=None):
+def make_codec_branch(master, listen, mp3, job, targets, ff, progress=None, *, write_mp3=True):
+    """Fit and verify the *decoded MP3* against its independent targets.
+
+    Re-encode from a fresh lossless branch of master each time. The WAV target
+    never changes to rescue an MP3 failure, and the waveform is not serially
+    passed through the limiter on each solver iteration.
+    """
+    targets.validate()
+    source_hash = io.file_hash(master)
+    info = sf.info(master)
+    master_qc = peak.measure(master, progress, 'CODEC_SOURCE')
+    drive_target, branch_ceiling = targets.mp3_lufs, targets.mp3_tp
+    codec_qc = None
+    trials = []
+    for attempt in range(6 if write_mp3 else 1):
+        gain_db = drive_target - master_qc['lufs_i']
+        limited = master_qc['true_peak_max_dbtp_estimate'] + gain_db > branch_ceiling - .02
+        if limited:
+            branch = job/'CODEC_BRANCH_FLOAT.wav'
+            fit_report = peak.fit(master, branch, job/'codec_peak', drive_target,
+                                  branch_ceiling, ff, progress)
+            write_pcm24(branch, listen)
+        else:
+            fit_report = dict(limiter_engaged=False, target_lufs=drive_target,
+                              ceiling_dbtp=branch_ceiling)
+            write_pcm24(master, listen, gain_db)
+        listen_qc = peak.measure(listen, progress, 'ENCODE_INPUT_QC')
+        if (listen_qc['lufs_i'] is None or abs(listen_qc['lufs_i']-drive_target) > .03 or
+                listen_qc['true_peak_max_dbtp_estimate'] > branch_ceiling):
+            raise RuntimeError('MP3 branch PCM LUFS/TP gate failed')
+        if not write_mp3:
+            return None, listen_qc, dict(limiter_engaged=limited, trials=trials,
+                                        master_sha256=source_hash, fit=fit_report)
+        rate = info.samplerate if info.samplerate <= 48000 else 48000
+        peak.execute(ff, ['-i', str(listen), '-map', '0:a:0', '-map_metadata', '-1',
+            '-ar', str(rate), '-c:a', 'libmp3lame', '-b:a', '320k', str(mp3)],
+            job/'mp3_encode.log', progress, 'ENCODE_MP3_FROM_14_WAV')
+        decoded = job/'MP3_DECODED.wav'
+        peak.execute(ff, ['-i', str(mp3), '-map_metadata', '-1', '-c:a', 'pcm_f32le', str(decoded)],
+                     job/'mp3_decode.log', progress, 'MP3_DECODE')
+        codec_qc = peak.measure(decoded, progress, 'MP3_ROUNDTRIP')
+        expected_frames = round(info.frames*rate/info.samplerate)
+        if (codec_qc['lufs_i'] is None or codec_qc['samplerate'] != rate or
+                codec_qc['channels'] != info.channels or
+                abs(codec_qc['frames']-expected_frames) > (0 if rate==info.samplerate else 1)):
+            raise RuntimeError('MP3 LUFS/TP/length gate failed; no false completion')
+        error = targets.mp3_lufs - codec_qc['lufs_i']
+        excess = codec_qc['true_peak_max_dbtp_estimate'] - targets.mp3_tp
+        trials.append(dict(attempt=attempt, encoder_target_lufs=drive_target,
+                           branch_tp_ceiling=branch_ceiling, fit=fit_report,
+                           codec_metrics=codec_qc))
+        if abs(error) <= .03 and excess <= 0:
+            if io.file_hash(master) != source_hash:
+                raise RuntimeError('MP3 branch changed the WAV')
+            return codec_qc, listen_qc, dict(limiter_engaged=limited, trials=trials,
+                master_sha256=source_hash, fit=fit_report)
+        # Very small codec gain correction is made from the same WAV. If this
+        # does not converge within the finite budget, neither output is published.
+        drive_target += error
+        if excess > 0:
+            branch_ceiling -= excess + max(0.0, error) + .05
+        if not -30 <= drive_target <= -8 or branch_ceiling < -12:
+            raise RuntimeError('MP3 target cannot be met inside the finite processing budget')
+    raise RuntimeError('MP3 LUFS/TP target did not converge; nothing published')
+
+
+def _run_file(source, root, *, write_mp3=True, interrupt_after=None, targets=None):
+    targets = (targets if targets is not None else Targets()).validate()
     source, root = Path(source).resolve(strict=True), Path(root).resolve()
     validate_paths(source, root)
     dsp = legacy.verify_dsp()
@@ -148,8 +216,9 @@ def _run_file(source, root, *, write_mp3=True, interrupt_after=None):
                  frozen_dsp=dsp, ffmpeg_sha256=io.file_hash(ff),
                  versions={n: importlib.metadata.version(n) for n in
                            ('numpy', 'scipy', 'soundfile', 'pyloudnorm')},
-                 targets=dict(master_lufs=MASTER_LUFS, master_tp_ceiling=MASTER_TP,
-                              listen_lufs=LISTEN_LUFS, prep_lufs=PREP_LUFS, prep_tp_ceiling=PREP_TP),
+                 targets=dict(master_lufs=targets.wav_lufs, master_tp_ceiling=targets.wav_tp,
+                              listen_lufs=targets.mp3_lufs, mp3_tp_ceiling=targets.mp3_tp,
+                              prep_lufs=PREP_LUFS, prep_tp_ceiling=PREP_TP),
                  peak_config=asdict(peak.PeakConfig()), he=True, mp3=write_mp3)
     key = io.obj_hash(ident)[:20]
     job = root / '.pdrm_work_v2' / key
@@ -185,7 +254,7 @@ def _run_file(source, root, *, write_mp3=True, interrupt_after=None):
             times, gains, stats = hf.analyze_control(note_wav, cfg, progress)
             raw, hf_cache = hf.render_raw(note_wav, job/'hf', times, gains, cfg, progress)
             master_float = job/'MASTER_FLOAT.wav'
-            master_report = peak.fit(raw, master_float, job/'master_peak', MASTER_LUFS, MASTER_TP, ff, progress)
+            master_report = peak.fit(raw, master_float, job/'master_peak', targets.wav_lufs, targets.wav_tp, ff, progress)
             if interrupt_after == 'master':
                 raise RuntimeError('TEST_INTERRUPTION_AFTER_MASTER')
             staged = job/'publish_staging'
@@ -196,34 +265,22 @@ def _run_file(source, root, *, write_mp3=True, interrupt_after=None):
             listen = staged/FILES[1]
             write_pcm24(master_float, master)
             master_qc = peak.measure(master, progress, 'MASTER_24BIT')
-            # Generate the -14 WAV from the actual published -12 WAV, not the
-            # original or an MP3, and do not limit again.
-            listen_gain = LISTEN_LUFS - master_qc['lufs_i']
-            write_pcm24(master, listen, listen_gain)
-            listen_qc = peak.measure(listen, progress, 'LISTEN_24BIT')
-            for met, target in ((master_qc, MASTER_LUFS), (listen_qc, LISTEN_LUFS)):
-                if (met['lufs_i'] is None or abs(met['lufs_i']-target) > .03 or
-                        met['true_peak_max_dbtp_estimate'] > MASTER_TP or
+            master_hash = io.file_hash(master)
+            listen_gain = targets.mp3_lufs - master_qc['lufs_i']
+            # This branch always starts from the delivered WAV, never the source
+            # mix. Extra limiting is used only if this MP3 target needs it.
+            codec_qc, listen_qc, codec_report = make_codec_branch(
+                master, listen, staged/FILES[2], job, targets, ff, progress,
+                write_mp3=write_mp3)
+            for met, target, ceiling in ((master_qc, targets.wav_lufs, targets.wav_tp),
+                                          (listen_qc, targets.mp3_lufs, targets.mp3_tp)):
+                if (met['lufs_i'] is None or abs(met['lufs_i']-target) > (.10 if met is listen_qc else .03) or
+                        met['true_peak_max_dbtp_estimate'] > ceiling or
                         (met['frames'], met['samplerate'], met['channels']) !=
                         (info.frames, info.samplerate, info.channels)):
                     raise RuntimeError('Published WAV LUFS/TP/shape gate failed')
-            codec_qc = None
-            if write_mp3:
-                codec_rate = info.samplerate if info.samplerate <= 48000 else 48000
-                mp3 = staged/FILES[2]
-                peak.execute(ff, ['-i', str(listen), '-map', '0:a:0', '-map_metadata', '-1',
-                     '-ar', str(codec_rate), '-c:a', 'libmp3lame', '-b:a', '320k', str(mp3)],
-                     job/'mp3_encode.log', progress, 'ENCODE_MP3_FROM_14_WAV')
-                decoded = job/'MP3_DECODED.wav'
-                peak.execute(ff, ['-i', str(mp3), '-map_metadata', '-1', '-c:a', 'pcm_f32le', str(decoded)],
-                             job/'mp3_decode.log', progress, 'MP3_DECODE')
-                codec_qc = peak.measure(decoded, progress, 'MP3_ROUNDTRIP')
-                expected_frames = round(info.frames * codec_rate / info.samplerate)
-                if (codec_qc['lufs_i'] is None or abs(codec_qc['lufs_i']-LISTEN_LUFS) > .10 or
-                        codec_qc['true_peak_max_dbtp_estimate'] > MASTER_TP or
-                        abs(codec_qc['frames']-expected_frames) > (0 if codec_rate == info.samplerate else 1) or
-                        codec_qc['samplerate'] != codec_rate or codec_qc['channels'] != 2):
-                    raise RuntimeError('MP3 LUFS/TP/length gate failed; no false completion')
+            if io.file_hash(master) != master_hash:
+                raise RuntimeError('MP3 branch changed the delivered WAV')
             if io.file_hash(source) != h:
                 raise RuntimeError('Source changed during processing')
             report = dict(version=VERSION, status='COMPLETE', source_name=source.name,
@@ -233,7 +290,8 @@ def _run_file(source, root, *, write_mp3=True, interrupt_after=None):
                           note_status=note_report['status'], note_scale=note_report['selected_scale'],
                           note_events=note_report['selected_events'], hf_stats=stats, hf_cache=hf_cache,
                           master_metrics=master_qc, listen_metrics=listen_qc, codec_metrics=codec_qc,
-                          listen_gain_db=listen_gain, mp3_source=FILES[1],
+                          listen_gain_db=listen_gain, mp3_source=FILES[1], codec_branch=codec_report,
+                          requested_targets=targets.to_dict(),
                           output_pcm_sha256={p.name: io.pcm_hash(p) for p in (master, listen)},
                           scope='New authorized full chain, not a recreation of undocumented old peak protection')
             io.atomic_json(staged/'RUN_REPORT.json', report)
@@ -244,7 +302,9 @@ def _run_file(source, root, *, write_mp3=True, interrupt_after=None):
                   f'| {FILES[1]} | {listen_qc["lufs_i"]:.4f} | {listen_qc["true_peak_max_dbtp_estimate"]:.4f} dBTP |\n')
             if codec_qc:
                 md += f'| {FILES[2]}（復号後） | {codec_qc["lufs_i"]:.4f} | {codec_qc["true_peak_max_dbtp_estimate"]:.4f} dBTP |\n'
-            md += ('\n−2 dBTPは上限。−14 WAVは−12 WAVから一定ゲインで作り、MP3は−14 WAVから符号化しました。'
+            md += (f'\n指定値: WAV {targets.wav_lufs:g} LUFS / TP上限 {targets.wav_tp:g} dBTP、'
+                   f'MP3 {targets.mp3_lufs:g} LUFS / TP上限 {targets.mp3_tp:g} dBTP。'
+                   '\nMP3は完成WAVから作成。追加ピーク処理はMP3用の条件が要求するときだけ、その分岐へ適用します。'
                    '\n\nWAVは24-bit PCM、入力と同じサンプルレート。MP3は44.1/48kHz。原音未変更。'
                    '\n\nこの出力を再度入力せず、やり直す場合は元のWAV/FLACを選んでください。'
                    '\n\n旧3曲比較の未記録ピーク処理の再現ではなく、4倍処理・遅延補償付きalimiterを今回明示実装しました。'
@@ -266,9 +326,9 @@ def _run_file(source, root, *, write_mp3=True, interrupt_after=None):
             raise
 
 
-def run_file(source, root, *, write_mp3=True, interrupt_after=None):
+def run_file(source, root, *, write_mp3=True, interrupt_after=None, targets=None):
     with _LOCK, legacy._RUNTIME_LOCK:
-        return _run_file(source, root, write_mp3=write_mp3, interrupt_after=interrupt_after)
+        return _run_file(source, root, write_mp3=write_mp3, interrupt_after=interrupt_after, targets=targets)
 
 
 def choose_paths(sources, root):

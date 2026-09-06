@@ -1,5 +1,6 @@
 """Portable Windows entry; changes resource discovery only, never DSP rules."""
 from __future__ import annotations
+import argparse
 import hashlib
 import json
 import multiprocessing
@@ -9,10 +10,10 @@ import sys
 import time
 import traceback
 
-APP_VERSION = '2.1.1-exe'
+APP_VERSION = '2.2.0-exe'
 MODULES = ('processed_finish', 'distribution_finish', 'distribution_peak',
            'accepted_finish', 'note_sub_lab', 'note_sub_lab_v02',
-           'hf_temporal_contrast_lab')
+           'hf_temporal_contrast_lab', 'target_settings', 'target_gui')
 
 
 class Tee:
@@ -108,6 +109,34 @@ def run(argv=None):
                               tkinter='created_and_destroyed')
                 Path(args[1]).write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding='utf-8')
                 return 0
+            if args[:1] == ['--gui-check']:
+                from target_gui import self_check
+                if len(args) != 2: raise ValueError('--gui-check requires an output path')
+                return self_check(args[1])
+            headless = '--headless' in args
+            args = [a for a in args if a != '--headless']
+            if headless:
+                # Automated CLI execution uses explicit flags or documented
+                # defaults; it never unexpectedly reuses a person's GUI settings.
+                if no_open and os.name == 'nt':
+                    app.os.startfile = lambda *a, **k: None
+                parser = argparse.ArgumentParser()
+                parser.add_argument('sources', nargs='*', type=Path)
+                parser.add_argument('--work-root')
+                parser.add_argument('--replace-managed', action='store_true')
+                for key in ('wav-lufs','wav-tp','mp3-lufs','mp3-tp'):
+                    parser.add_argument('--'+key,type=float)
+                parsed = parser.parse_args(args)
+                if not parsed.sources: raise ValueError('--headless requires source files')
+                validate_magic(parsed.sources)
+                result = app.main(args)
+                return result
+            from target_gui import choose_targets
+            selection = choose_targets()
+            if selection is None:
+                print('中止しました。原音は変更していません。')
+                return 0
+            targets, replace_managed = selection
             sources = app.choose_sources(args)
             if not sources:
                 print('中止しました。原音は変更していません。')
@@ -116,7 +145,11 @@ def run(argv=None):
             app.choose_sources = lambda ignored: sources
             if no_open and os.name == 'nt':
                 app.os.startfile = lambda *a, **k: None
-            result = app.main([str(p) for p in sources])
+            params = [str(p) for p in sources]
+            for key, value in targets.to_dict().items():
+                params.extend(['--'+key.replace('_','-'),str(value)])
+            if replace_managed: params.append('--replace-managed')
+            result = app.main(params)
             print('完了しました。' if result == 0 else '保存できなかった音源があります。上の表示を確認してください。', flush=True)
         except KeyboardInterrupt:
             print('中断しました。再実行では元音源を選んでください。'); result = 130

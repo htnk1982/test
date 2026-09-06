@@ -12,7 +12,7 @@ import urllib.request
 import zipfile
 
 MODULES = ('processed_finish', 'distribution_finish', 'distribution_peak',
-           'accepted_finish', 'note_sub_lab', 'note_sub_lab_v02', 'hf_temporal_contrast_lab')
+           'accepted_finish', 'note_sub_lab', 'note_sub_lab_v02', 'hf_temporal_contrast_lab', 'target_settings', 'target_gui')
 PACKAGES = ('numpy', 'scipy', 'soundfile', 'pyloudnorm', 'psutil', 'imageio-ffmpeg', 'cffi', 'pycparser')
 
 
@@ -40,7 +40,7 @@ def main():
     (hooks / 'hook-imageio_ffmpeg.py').write_text('datas = []\nbinaries = []\n', encoding='utf-8')
     resources = {n+'.py': sha(root/(n+'.py')) for n in MODULES}
     resources['native/ffmpeg.exe'] = sha(ff)
-    manifest = dict(app_version='2.1.1-exe', resources=resources,
+    manifest = dict(app_version='2.2.0-exe', resources=resources,
                     source_commit=os.environ.get('GITHUB_SHA', 'local'),
                     versions={n:md.version(n) for n in PACKAGES}, ffmpeg_version=version,
                     native_recipe='packaging/build_codec.sh', signing='UNSIGNED')

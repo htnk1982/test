@@ -18,7 +18,7 @@ import offline_peak_stream as base
 import offline_peak_context as context
 import note_sub_lab as io
 
-VERSION='offline-peak-stream-0.4.1'
+VERSION='offline-peak-stream-0.4.2'
 MAX_SECONDS=base.MAX_SECONDS
 verify_kernel=base.verify_kernel
 validate_source=base.validate_source
@@ -29,11 +29,15 @@ quality_report=base.quality_report
 _shape=base._shape
 
 
+def _context_config(cfg):
+    """JSON-stable config; tuples otherwise deserialize as lists and break resume."""
+    d=asdict(cfg)
+    if isinstance(d.get('contexts_ms'),tuple):d['contexts_ms']=list(d['contexts_ms'])
+    return d
+
+
 def _clusters(starts,n,length,sr):
     starts=sorted(set(int(s) for s in starts));out=[]
-    # Adjacent/overlapping rejected v0.1 frames belong to one physical crest.
-    # Distant events remain independent even though the rescue may inspect a
-    # longer surrounding context for each of them.
     merge_gap=round(.064*sr)
     for s in starts:
         a=max(0,s);b=min(length,s+n)
@@ -61,7 +65,6 @@ def _read_upsampled(f,a,b,q):
 
 
 def _reconstructed_patch(pf,a,b,candidate,q):
-    """Measure the real native patch with surrounding unchanged file context."""
     left=max(0,a-64);right=min(pf.frames,b+64);pf.seek(left)
     buf=pf.read(right-left,dtype='float64',always_2d=True);io.finite(buf)
     buf[a-left:b-left]=candidate
@@ -76,9 +79,9 @@ def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
     if not math.isfinite(chunk_seconds) or not .05<=chunk_seconds<=8:raise ValueError('Invalid I/O chunk duration')
     source,work=Path(source),Path(work);n=max(128,round(cfg.frame_ms*info.samplerate/1000));n+=n%2
     hop=n//2;q=cfg.oversample;length=info.frames;gain=10**(gain_db/20)
-    width=max(hop,round(chunk_seconds*info.samplerate/hop)*hop)
+    width=max(hop,round(chunk_seconds*info.samplerate/hop)*hop);context_dict=_context_config(context_cfg)
     identity=dict(source=io.file_hash(source),kernel=verify_kernel(),version=VERSION,code=io.file_hash(__file__),
-        context_code=io.file_hash(context.__file__),config=asdict(cfg),context_config=asdict(context_cfg),
+        context_code=io.file_hash(context.__file__),config=asdict(cfg),context_config=context_dict,
         gain_db=gain_db,ceiling=ceiling,width=width,
         versions={p:importlib.metadata.version(p) for p in ('numpy','scipy','soundfile')})
     directory=work/('pass_'+io.obj_hash(identity)[:20]);directory.mkdir(parents=True,exist_ok=True)
@@ -134,7 +137,7 @@ def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
             audio_buffer_seconds=width/info.samplerate+2*n/info.samplerate+.003,
             chunk_width_frames=width,global_frame_length=n)
     patched=directory/'CONTEXT_PATCHED.wav';patch_marker=directory/'CONTEXT_PATCHED.json'
-    rescue_id=dict(provisional=io.file_hash(provisional),failures=failures,context_config=asdict(context_cfg),ceiling=ceiling)
+    rescue_id=dict(provisional=io.file_hash(provisional),failures=failures,context_config=context_dict,ceiling=ceiling)
     saved=io.read_json(patch_marker) if io.valid_audio_cache(patched,patch_marker) else None
     rescue_records=[]
     if not saved or saved.get('identity')!=rescue_id:
@@ -159,11 +162,6 @@ def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
                                     native_reconstruction_peak=reconstructed_peak,native_tp_refinements=refine,
                                     native_local_metrics=reconstructed_metrics));break
                             if reconstructed_peak>ceiling+2e-4:
-                                # The 4x constrained field can reacquire a small
-                                # intersample peak after returning to native rate.
-                                # Re-solve from the SAME reference with a lower
-                                # internal box; never clip the already processed
-                                # candidate and never feed it back as a source.
                                 ratio=reconstructed_peak/max(ceiling,1e-15)
                                 local_ceiling=local_ceiling/ratio*10**(-.03/20)
                                 if local_ceiling<=0:raise kernel.NotFeasible('Native TP refinement produced invalid ceiling')
@@ -190,9 +188,9 @@ def fit(source,dest,work,target,ceiling,*,cfg=kernel.Config(),context_cfg=contex
     if not math.isfinite(target) or not -30<=target<=-8 or not math.isfinite(ceiling) or not -12<=ceiling<=-1:raise ValueError('Invalid output targets')
     source,dest,work=Path(source).resolve(),Path(dest).resolve(),Path(work).resolve()
     if source==dest:raise ValueError('Never overwrite source')
-    info=validate_source(source,cfg);kernel_hash=verify_kernel();context_cfg.validate(info.samplerate*cfg.oversample)
+    info=validate_source(source,cfg);kernel_hash=verify_kernel();context_cfg.validate(info.samplerate*cfg.oversample);context_dict=_context_config(context_cfg)
     identity=dict(source=io.file_hash(source),kernel=kernel_hash,version=VERSION,code=io.file_hash(__file__),
-        context_code=io.file_hash(context.__file__),target=target,ceiling=ceiling,config=asdict(cfg),context_config=asdict(context_cfg),
+        context_code=io.file_hash(context.__file__),target=target,ceiling=ceiling,config=asdict(cfg),context_config=context_dict,
         versions={n:importlib.metadata.version(n) for n in ('numpy','scipy','soundfile','pyloudnorm')})
     job=work/('oppo_'+io.obj_hash(identity)[:20]);job.mkdir(parents=True,exist_ok=True);dest.parent.mkdir(parents=True,exist_ok=True)
     marker=dest.with_suffix('.oppo.json')
@@ -230,7 +228,7 @@ def fit(source,dest,work,target,ceiling,*,cfg=kernel.Config(),context_cfg=contex
             report=dict(status='GAIN_ONLY' if gain_only else 'WAVEFORM_CANDIDATE',output_lufs=metrics['lufs_i'],
                 output_tp=metrics['true_peak_max_dbtp_estimate'],gain_db=drive,optimizer_used=not gain_only,
                 conventional_limiter_used=False,context_rescue_used=regions>0,context_rescue_regions=regions,
-                output_metrics=metrics,quality=qa,trials=trials,config=asdict(cfg),context_config=asdict(context_cfg),
+                output_metrics=metrics,quality=qa,trials=trials,config=asdict(cfg),context_config=context_dict,
                 source_unchanged=True,kernel_sha256=kernel_hash,
                 scope='Selected v0.1 frames unchanged when feasible; long-context repair only after old pointwise-budget failure')
             tmp=dest.with_suffix('.partial.wav');shutil.copyfile(candidate,tmp);io.sync_owned_file(tmp);os.replace(tmp,dest)

@@ -1,0 +1,63 @@
+name: PDRM Offline Waveform Peak Lab
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/offline_peak_lab.py'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_offline_peak_lab.py'
+      - '.github/workflows/pdrm-offline-peak-ci.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: windows-latest
+            python: '3.12'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements.txt
+      - name: Confirm only independent experiment added
+        shell: python
+        run: |
+          import subprocess
+          paths=subprocess.check_output(['git','diff','--name-only','c6dd89ec7bebcf20a368f88d450571675228e3aa','HEAD'],text=True).splitlines()
+          allowed={'PDRM_Local_Render_Engine_v1/offline_peak_lab.py','PDRM_Local_Render_Engine_v1/tests/test_offline_peak_lab.py','PDRM_Local_Render_Engine_v1/docs/OFFLINE_PEAK_V01_IMPLEMENTATION_20260906.md','.github/workflows/pdrm-offline-peak-ci.yml'}
+          assert set(paths)<=allowed, paths
+      - name: Test 167 existing plus 25 offline waveform tests
+        shell: python
+        run: |
+          import sys,unittest,json,platform,importlib.metadata
+          from pathlib import Path
+          sys.path.insert(0,str(Path.cwd()))
+          suite=unittest.TestSuite()
+          for pattern in ('test_note_sub*.py','test_hf_temporal_contrast.py','test_accepted_finish.py','test_distribution_finish.py','test_processed_finish.py','test_target_controls.py','test_offline_peak_lab.py'):
+              suite.addTests(unittest.defaultTestLoader.discover('tests',pattern=pattern))
+          r=unittest.TextTestRunner(verbosity=2).run(suite)
+          report=dict(tests=r.testsRun,ok=r.wasSuccessful(),failures=len(r.failures),errors=len(r.errors),skipped=len(r.skipped),platform=platform.platform(),python=sys.version,versions={p:importlib.metadata.version(p) for p in ('numpy','scipy','soundfile','pyloudnorm')},scope='Synthetic tests only; no personal music uploaded')
+          Path('OFFLINE_PEAK_TEST_RESULTS.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+          sys.exit(0 if r.wasSuccessful() and r.testsRun==192 and not r.skipped else 1)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: offline-peak-${{ matrix.os }}-py${{ matrix.python }}
+          path: PDRM_Local_Render_Engine_v1/OFFLINE_PEAK_TEST_RESULTS.json

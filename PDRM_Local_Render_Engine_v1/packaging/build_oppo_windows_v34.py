@@ -18,7 +18,7 @@ def main():
     (hooks/'hook-processed_finish_v32.py').write_text('module_collection_mode = '+repr({n:'py' for n in MODULES})+'\n',encoding='utf-8')
     (hooks/'hook-imageio_ffmpeg.py').write_text('datas = []\nbinaries = []\n',encoding='utf-8')
     resources={n+'.py':sha(root/(n+'.py')) for n in MODULES};resources['native/ffmpeg.exe']=sha(ff)
-    manifest=dict(app_version='3.4.0-auto-exe',resources=resources,source_commit=os.environ.get('GITHUB_SHA','local'),versions={n:md.version(n) for n in PACKAGES},
+    manifest=dict(app_version='3.4.1-auto-exe',resources=resources,source_commit=os.environ.get('GITHUB_SHA','local'),versions={n:md.version(n) for n in PACKAGES},
         ffmpeg_version=version,native_recipe='packaging/build_codec.sh',signing='UNSIGNED',automatic_policy='GAIN_ONLY -> OPPO -> LIMITER_ONLY_AFTER_NOT_FEASIBLE',
         execution='SPARSE_EXACT_LONG_CONTEXT')
     (work/'BUNDLE_MANIFEST.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
@@ -53,7 +53,7 @@ def main():
         for p in (root/'packaging').rglob('*'):
             if p.is_file() and '__pycache__' not in str(p):z.write(p,p.relative_to(root))
         for p in (root/'tests').glob('test_*.py'):z.write(p,p.relative_to(root))
-        z.write(root/'docs/AUTO_V34_GUIDE.md','AUTO_V34_GUIDE.md')
+        z.write(root/'docs/AUTO_V34_GUIDE.md','AUTO_V34_GUIDE.md');z.write(root/'docs/CONTEXT_MS_BUGFIX_20260906.md','CONTEXT_MS_BUGFIX_20260906.md')
     (dest/'THIRD_PARTY_NOTICES.md').write_text('Third-party licenses and corresponding sources are retained in LICENSES and SOURCES.\n',encoding='utf-8')
     shutil.copy2(root/'docs/AUTO_V34_GUIDE.md',dest/'使い方.md')
     if (root/'SOURCE_TEST_RESULTS.json').exists():shutil.copy2(root/'SOURCE_TEST_RESULTS.json',dest/'SOURCE_TEST_RESULTS.json')

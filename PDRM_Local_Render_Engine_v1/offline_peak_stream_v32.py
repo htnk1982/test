@@ -18,7 +18,7 @@ import offline_peak_stream as base
 import offline_peak_context as context
 import note_sub_lab as io
 
-VERSION='offline-peak-stream-0.4.2'
+VERSION='offline-peak-stream-0.4.3-ms-fix'
 MAX_SECONDS=base.MAX_SECONDS
 verify_kernel=base.verify_kernel
 validate_source=base.validate_source
@@ -47,11 +47,31 @@ def _clusters(starts,n,length,sr):
 
 
 def _context_bounds(a,b,length,sr,ms,guard_ms):
-    need=(b-a)+2*round(guard_ms*sr/1000)+8
-    width=max(need,round(ms*sr));width=min(width,length)
+    """A configured width is in milliseconds at the *native* sample rate.
+
+    Never silently grow a short candidate to the cluster length. A candidate
+    that cannot contain the failure plus its guards is infeasible; the caller
+    may try the next configured width. The final width therefore stays bounded
+    by the largest explicitly configured context (1024 ms by default).
+    """
+    if (not isinstance(sr,(int,np.integer)) or isinstance(sr,bool) or sr<=0 or
+        not all(isinstance(v,(int,np.integer)) and not isinstance(v,bool) for v in (a,b,length)) or
+        not 0<=a<b<=length):
+        raise ValueError('Invalid context sample rate or sample bounds')
+    if (not math.isfinite(ms) or ms<=0 or
+        not math.isfinite(guard_ms) or guard_ms<0):
+        raise ValueError('Invalid context duration in milliseconds')
+    requested_frames=round(ms*sr/1000.0)
+    guard_frames=round(guard_ms*sr/1000.0)
+    needed_frames=(b-a)+2*guard_frames+8
+    width=min(requested_frames,length)
+    if width<needed_frames:
+        raise kernel.NotFeasible(
+            f'Context {ms:g} ms cannot contain failure and guards '
+            f'({needed_frames/sr*1000:.3f} ms required); no implicit expansion')
     center=(a+b)//2;left=max(0,center-width//2);right=min(length,left+width)
     left=max(0,right-width)
-    if a-left<round(guard_ms*sr/1000) or right-b<round(guard_ms*sr/1000):
+    if a-left<guard_frames or right-b<guard_frames:
         raise kernel.NotFeasible('Failure region too close to context edge')
     return left,right
 
@@ -81,7 +101,7 @@ def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
     hop=n//2;q=cfg.oversample;length=info.frames;gain=10**(gain_db/20)
     width=max(hop,round(chunk_seconds*info.samplerate/hop)*hop);context_dict=_context_config(context_cfg)
     identity=dict(source=io.file_hash(source),kernel=verify_kernel(),version=VERSION,code=io.file_hash(__file__),
-        context_code=io.file_hash(context.__file__),config=asdict(cfg),context_config=context_dict,
+        context_code=io.file_hash(context.__file__),context_units='milliseconds_v1',config=asdict(cfg),context_config=context_dict,
         gain_db=gain_db,ceiling=ceiling,width=width,
         versions={p:importlib.metadata.version(p) for p in ('numpy','scipy','soundfile')})
     directory=work/('pass_'+io.obj_hash(identity)[:20]);directory.mkdir(parents=True,exist_ok=True)
@@ -148,6 +168,7 @@ def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
                 for ms in context_cfg.contexts_ms:
                     try:
                         a,b=_context_bounds(fa,fb,length,info.samplerate,ms,context_cfg.edge_guard_ms)
+                        if progress:progress.set(f'OPPO_CONTEXT_PLAN_{(b-a)/info.samplerate*1000:.1f}MS_R{ci+1}',ci,len(_clusters(failures,n,length,info.samplerate)))
                         native,up=_read_upsampled(pf,a,b,q);locked=np.zeros_like(up,dtype=bool);locked[::q]=native==0
                         local_ceiling=ceiling
                         for refine in range(5):
@@ -157,7 +178,9 @@ def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
                             reconstructed_peak=float(np.max(np.abs(test_up)))
                             reconstructed_metrics=context._metrics(up,test_up,info.samplerate*q,context_cfg)
                             if reconstructed_peak<=ceiling+2e-4 and all(reconstructed_metrics['gates'].values()):
-                                accepted=(a,b,candidate,dict(st,context_ms=float(ms),start=a/info.samplerate,end=b/info.samplerate,
+                                accepted=(a,b,candidate,dict(st,context_ms=float(ms),actual_context_ms=(b-a)/info.samplerate*1000,
+                                    context_frames=b-a,native_samplerate=info.samplerate,
+                                    start=a/info.samplerate,end=b/info.samplerate,
                                     requested_ceiling=float(ceiling),solver_ceiling=float(local_ceiling),
                                     native_reconstruction_peak=reconstructed_peak,native_tp_refinements=refine,
                                     native_local_metrics=reconstructed_metrics));break
@@ -190,7 +213,7 @@ def fit(source,dest,work,target,ceiling,*,cfg=kernel.Config(),context_cfg=contex
     if source==dest:raise ValueError('Never overwrite source')
     info=validate_source(source,cfg);kernel_hash=verify_kernel();context_cfg.validate(info.samplerate*cfg.oversample);context_dict=_context_config(context_cfg)
     identity=dict(source=io.file_hash(source),kernel=kernel_hash,version=VERSION,code=io.file_hash(__file__),
-        context_code=io.file_hash(context.__file__),target=target,ceiling=ceiling,config=asdict(cfg),context_config=context_dict,
+        context_code=io.file_hash(context.__file__),context_units='milliseconds_v1',target=target,ceiling=ceiling,config=asdict(cfg),context_config=context_dict,
         versions={n:importlib.metadata.version(n) for n in ('numpy','scipy','soundfile','pyloudnorm')})
     job=work/('oppo_'+io.obj_hash(identity)[:20]);job.mkdir(parents=True,exist_ok=True);dest.parent.mkdir(parents=True,exist_ok=True)
     marker=dest.with_suffix('.oppo.json')

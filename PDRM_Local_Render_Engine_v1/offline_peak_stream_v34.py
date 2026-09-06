@@ -1,8 +1,9 @@
 """OPPO v3.4 execution wrapper.
 
-The v3.2 whole-track orchestration remains the behavioral reference. Only its
-long-context module is swapped, under a lock, for the mathematically equivalent
-sparse principal-block solver. Previous v3.2/v3.3 modules remain untouched.
+Uses the corrected shared millisecond context bounds. Buggy legacy rescue
+outputs are NOT the quality oracle. The sparse solver still matches the dense
+solver on the same correctly bounded input; the selected short-frame kernel
+is unchanged.
 """
 from __future__ import annotations
 from contextlib import contextmanager
@@ -11,7 +12,7 @@ import threading
 import offline_peak_stream_v32 as base
 import offline_peak_context_v34 as context
 
-VERSION='offline-peak-stream-0.5.0-sparse-context'
+VERSION='offline-peak-stream-0.5.1-ms-fix'
 MAX_SECONDS=base.MAX_SECONDS
 verify_kernel=base.verify_kernel
 validate_source=base.validate_source

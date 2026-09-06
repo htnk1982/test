@@ -1,9 +1,10 @@
-name: PDRM AUTO v3.4 Windows
+name: PDRM AUTO v3.4.1 Millisecond Fix Windows
 on:
   push:
     branches: [pdrm-note-sub-lab-v1]
     paths:
       - 'PDRM_Local_Render_Engine_v1/offline_peak_context_v34.py'
+      - 'PDRM_Local_Render_Engine_v1/offline_peak_stream_v32.py'
       - 'PDRM_Local_Render_Engine_v1/offline_peak_stream_v34.py'
       - 'PDRM_Local_Render_Engine_v1/auto_peak_v34.py'
       - 'PDRM_Local_Render_Engine_v1/auto_conditioned_v34.py'
@@ -11,6 +12,7 @@ on:
       - 'PDRM_Local_Render_Engine_v1/natural_gui_v34.py'
       - 'PDRM_Local_Render_Engine_v1/natural_exe_entry_v34.py'
       - 'PDRM_Local_Render_Engine_v1/tests/test_oppo_performance_v34.py'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_context_units.py'
       - 'PDRM_Local_Render_Engine_v1/packaging/build_oppo_windows_v34.py'
       - 'PDRM_Local_Render_Engine_v1/packaging/smoke_oppo_windows_v34.py'
       - 'PDRM_Local_Render_Engine_v1/packaging/verify_oppo_v34_sources.py'
@@ -63,7 +65,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: auto-v34-source-tests
+          name: auto-v341-source-tests
           path: PDRM_Local_Render_Engine_v1/SOURCE_TEST_RESULTS.json
   windows:
     needs: [codec, source]
@@ -92,26 +94,30 @@ jobs:
         run: |
           python -m venv .exeenv34
           .\.exeenv34\Scripts\python.exe -m pip install -r packaging/requirements-exe.txt
-      - name: Verify frozen prior path and sparse-exact regressions
+      - name: Verify unit-correct behavior and regressions
         shell: python
         run: |
           import os,subprocess
           from pathlib import Path
           env=os.environ.copy();env['PATH']=str(Path('../codec-dist').resolve())+os.pathsep+env['PATH']
           subprocess.run([str(Path('.exeenv34/Scripts/python.exe').resolve()),'packaging/verify_oppo_v34_sources.py'],env=env,check=True)
-      - name: Build PDRM AUTO v3.4 PyInstaller folder
+      - name: Build PDRM AUTO v3.4.1 PyInstaller folder
         run: .\.exeenv34\Scripts\python.exe packaging/build_oppo_windows_v34.py --codec ../codec-dist
-      - name: Test isolated EXE, automatic policy, output and cleanup
+      - name: Test isolated EXE, startup unit contract, output and cleanup
         run: .\.exeenv34\Scripts\python.exe packaging/smoke_oppo_windows_v34.py
-      - name: Package verified v3.4 EXE
+      - name: Package verified v3.4.1 EXE
         shell: python
         run: |
           from pathlib import Path
           import zipfile,hashlib,json
-          root=Path('dist/PDRM_AUTO');report=json.loads((root/'EXE_SMOKE_RESULTS.json').read_text(encoding='utf-8'));assert report['status']=='PASS'
+          root=Path('dist/PDRM_AUTO')
+          report=json.loads((root/'EXE_SMOKE_RESULTS.json').read_text(encoding='utf-8'))
+          assert report['status']=='PASS'
+          build=json.loads((root/'BUILD_REPORT.json').read_text(encoding='utf-8'))
+          assert build['app_version']=='3.4.1-auto-exe'
           lines=[hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.relative_to(root).as_posix() for p in sorted(root.rglob('*')) if p.is_file()]
           (root/'SHA256SUMS.txt').write_text('\n'.join(lines)+'\n',encoding='utf-8')
-          name='PDRM_AUTO_EXE_Windows_x64_v3.4.0.zip'
+          name='PDRM_AUTO_EXE_Windows_x64_v3.4.1.zip'
           with zipfile.ZipFile(name,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
               for p in root.rglob('*'):
                   if p.is_file():z.write(p,'PDRM_AUTO/'+p.relative_to(root).as_posix())
@@ -119,10 +125,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: pdrm-auto-v3.4-windows-x64
+          name: pdrm-auto-v3.4.1-windows-x64
           path: |
-            PDRM_Local_Render_Engine_v1/PDRM_AUTO_EXE_Windows_x64_v3.4.0.zip
-            PDRM_Local_Render_Engine_v1/PDRM_AUTO_EXE_Windows_x64_v3.4.0.zip.sha256
+            PDRM_Local_Render_Engine_v1/PDRM_AUTO_EXE_Windows_x64_v3.4.1.zip
+            PDRM_Local_Render_Engine_v1/PDRM_AUTO_EXE_Windows_x64_v3.4.1.zip.sha256
             PDRM_Local_Render_Engine_v1/SOURCE_TEST_RESULTS.json
             PDRM_Local_Render_Engine_v1/dist/PDRM_AUTO/BUILD_REPORT.json
             PDRM_Local_Render_Engine_v1/dist/PDRM_AUTO/EXE_SMOKE_RESULTS.json

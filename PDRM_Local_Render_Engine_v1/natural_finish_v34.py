@@ -9,10 +9,10 @@ import workspace_cleanup
 io=base.io
 legacy=base.legacy
 FILES=base.FILES
-VERSION='natural-finish-3.4.0'
+VERSION='natural-finish-3.4.1'
 IDENTITY_MODULES=base.IDENTITY_MODULES+(
     'natural_finish_v34.py','auto_peak_v34.py','auto_conditioned_v34.py',
-    'offline_peak_stream_v34.py','offline_peak_context_v34.py','workspace_cleanup.py')
+    'offline_peak_stream_v34.py','offline_peak_stream_v32.py','offline_peak_context_v34.py','workspace_cleanup.py')
 verify_final=base.verify_final
 
 @contextmanager
@@ -35,11 +35,11 @@ def _finalize(report,final):
         prep_limiter_used=prep_lim,final_conventional_limiter_used=master_lim,codec_conventional_limiter_used=codec_lim,
         conventional_limiter_used=prep_lim or master_lim or codec_lim,
         chain=f'HarmonicElasticity -> PREP_AUTO[{prep_route}] -> Note-Sub -> HFTC -> MASTER_AUTO[{master_route}]',
-        execution_profile='V3.4_SPARSE_EXACT_LONG_CONTEXT')
+        execution_profile='V3.4.1_MILLISECOND_CONTEXT_FIX')
     io.atomic_json(final/'RUN_REPORT.json',report);mq=report['master_metrics'];cq=report.get('codec_metrics')
-    text=(f'# PDRM AUTO v3.4 完了 — {report.get("source_name","")}\n\n前段: {prep_route}。最終WAV: {master_route}。MP3分岐: {", ".join(codec_routes) if codec_routes else "なし"}。\n\n'
+    text=(f'# PDRM AUTO v3.4.1 完了 — {report.get("source_name","")}\n\n前段: {prep_route}。最終WAV: {master_route}。MP3分岐: {", ".join(codec_routes) if codec_routes else "なし"}。\n\n'
           '自動順序は Gain-only → OPPO → OPPOが自然さ/有限探索上 NotFeasible の場合だけ通常リミッター。\n'
-          'v3.4は長文脈OPPOの数学的に同じ変数部分だけを解き、処理待ちを短縮します。\n'
+          'v3.4.1は救済文脈のミリ秒換算を修正。旧版の誤った処理範囲との出力一致は保証しません。\n'
           'I/O異常、破損、ソース変更、非有限値、キャンセル等ではリミッターへフォールバックせず停止します。\n\n'
           f'WAV: {mq["lufs_i"]:.4f} LUFS / TP推定 {mq["true_peak_max_dbtp_estimate"]:.4f} dBTP。\n')
     if cq:text+=f'MP3: {cq["lufs_i"]:.4f} LUFS / TP推定 {cq["true_peak_max_dbtp_estimate"]:.4f} dBTP。\n'

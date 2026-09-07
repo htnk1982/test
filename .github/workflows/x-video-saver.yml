@@ -32,6 +32,10 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
+      - name: Smoke test resolver against supplied X post
+        working-directory: XVideoSaver
+        run: python3 smoke_test.py 2096554012937973979
+
       - name: Build debug APK
         working-directory: XVideoSaver
         run: gradle :app:assembleDebug --stacktrace

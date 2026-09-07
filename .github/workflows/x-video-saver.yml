@@ -40,6 +40,13 @@ jobs:
         working-directory: XVideoSaver
         run: gradle :app:assembleDebug --stacktrace
 
+      - name: Verify Android APK signature
+        working-directory: XVideoSaver
+        run: |
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk | tee APK_VERIFY.txt
+
       - name: Prepare artifact
         working-directory: XVideoSaver
         run: |
@@ -53,5 +60,6 @@ jobs:
           path: |
             XVideoSaver/XVideoSaver-v0.1.0.apk
             XVideoSaver/SHA256SUMS.txt
+            XVideoSaver/APK_VERIFY.txt
           if-no-files-found: error
           retention-days: 30

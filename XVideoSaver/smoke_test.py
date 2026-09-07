@@ -7,6 +7,7 @@ import urllib.request
 TWEET_ID = sys.argv[1] if len(sys.argv) > 1 else "2096554012937973979"
 TOKENS = ("x", "0", "a")
 RES = re.compile(r"/(\d{2,5})x(\d{2,5})/")
+UA = "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36"
 
 
 def walk(node, out):
@@ -35,7 +36,7 @@ def walk(node, out):
                 walk(value, out)
 
 
-def fetch(token):
+def fetch_metadata(token):
     url = (
         "https://cdn.syndication.twimg.com/tweet-result?id="
         + TWEET_ID
@@ -45,7 +46,7 @@ def fetch(token):
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36",
+            "User-Agent": UA,
             "Accept": "application/json,text/plain,*/*",
             "Referer": "https://platform.twitter.com/",
         },
@@ -54,22 +55,44 @@ def fetch(token):
         return json.load(response)
 
 
+def probe_video(url):
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": UA,
+            "Accept": "video/mp4,*/*",
+            "Range": "bytes=0-1023",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=20) as response:
+        status = getattr(response, "status", response.getcode())
+        ctype = response.headers.get("Content-Type", "")
+        first = response.read(32)
+        if status not in (200, 206):
+            raise RuntimeError(f"video HTTP {status}")
+        if not first:
+            raise RuntimeError("video response was empty")
+        return status, ctype
+
+
 last_error = None
 for token in TOKENS:
     try:
-        data = fetch(token)
+        data = fetch_metadata(token)
         candidates = []
         walk(data, candidates)
         if candidates:
             best = max(candidates, key=lambda x: (x[0], x[1], x[2]))
+            video_status, video_type = probe_video(best[3])
             # Intentionally do not print the signed media URL.
             print(
                 f"PASS tweet={TWEET_ID} token={token} mp4_candidates={len(candidates)} "
-                f"best_bitrate={best[0]} best_resolution_area={best[1]}"
+                f"best_bitrate={best[0]} best_resolution_area={best[1]} "
+                f"video_http={video_status} content_type={video_type}"
             )
             sys.exit(0)
     except Exception as exc:
         last_error = exc
 
-print(f"FAIL tweet={TWEET_ID}: no public MP4 candidate; last_error={last_error}", file=sys.stderr)
+print(f"FAIL tweet={TWEET_ID}: no downloadable public MP4; last_error={last_error}", file=sys.stderr)
 sys.exit(1)

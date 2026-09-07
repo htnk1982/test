@@ -1,0 +1,53 @@
+name: Build X Video Saver APK
+
+on:
+  push:
+    branches:
+      - x-video-saver-build
+    paths:
+      - 'XVideoSaver/**'
+      - '.github/workflows/x-video-saver.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build debug APK
+        working-directory: XVideoSaver
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Prepare artifact
+        working-directory: XVideoSaver
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk XVideoSaver-v0.1.0.apk
+          sha256sum XVideoSaver-v0.1.0.apk > SHA256SUMS.txt
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: XVideoSaver-APK
+          path: |
+            XVideoSaver/XVideoSaver-v0.1.0.apk
+            XVideoSaver/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

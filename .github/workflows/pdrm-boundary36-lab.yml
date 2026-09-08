@@ -1,0 +1,60 @@
+name: PDRM Boundary and Observer LAB
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/lowend_boundary_lab.py'
+      - 'PDRM_Local_Render_Engine_v1/context_occupancy_lab.py'
+      - 'PDRM_Local_Render_Engine_v1/stem_observer_lab.py'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_lowend_boundary_lab.py'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_context_observer_lab.py'
+      - '.github/workflows/pdrm-boundary36-lab.yml'
+permissions:
+  contents: read
+jobs:
+  contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy scipy soundfile pyloudnorm
+      - name: Verify independent modules and synthetic contracts
+        shell: python
+        run: |
+          from pathlib import Path
+          import sys,unittest,json,subprocess,platform
+          sys.path.insert(0,str(Path.cwd()))
+          frozen=['distribution_finish.py','hf_temporal_contrast_lab.py','offline_peak_lab.py','offline_peak_stream_v34.py','auto_peak_v34.py','natural_finish_v34.py','processed_finish.py']
+          for path in frozen:
+              base=subprocess.check_output(['git','show','cbefe937d9cfc41de42fce0729b96871c65e59de:PDRM_Local_Render_Engine_v1/'+path])
+              assert base.replace(b'\r\n',b'\n')==Path(path).read_bytes().replace(b'\r\n',b'\n'),path
+          suite=unittest.TestSuite()
+          for pattern in ('test_lowend_boundary_lab.py','test_context_observer_lab.py'):
+              suite.addTests(unittest.defaultTestLoader.discover('tests',pattern=pattern))
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          record=dict(tests=result.testsRun,ok=result.wasSuccessful(),errors=len(result.errors),failures=len(result.failures),skipped=len(result.skipped),platform=platform.platform(),scope='Synthetic contracts; no audio quality certification; no model checkpoint inference in CI',frozen_core='unchanged')
+          Path('BOUNDARY_CONTRACT_RESULTS.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
+          assert result.testsRun==44 and result.wasSuccessful() and not result.skipped
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boundary-contracts-${{ matrix.os }}
+          path: PDRM_Local_Render_Engine_v1/BOUNDARY_CONTRACT_RESULTS.json
+          retention-days: 30

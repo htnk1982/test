@@ -1,0 +1,35 @@
+name: PDRM Observer Research Checkpoint
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths: ['.github/workflows/pdrm-observer-research-checkpoint.yml']
+permissions:
+  contents: read
+jobs:
+  research-checkpoint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch official research checkpoint, no audio inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p observer-research
+          curl --fail --location --retry 2 --connect-timeout 30 --max-time 300 \
+            https://download.pytorch.org/torchaudio/models/hdemucs_high_musdbhq_only.pt \
+            -o observer-research/hdemucs_high_musdbhq_only.pt
+          test $(stat -c%s observer-research/hdemucs_high_musdbhq_only.pt) -gt 100000000
+          sha256sum observer-research/hdemucs_high_musdbhq_only.pt > observer-research/SHA256SUMS.txt
+          printf '%s\n' \
+            'RESEARCH ANALYSIS ONLY. Not part of a PDRM application distribution.' \
+            'Official TorchAudio HDEMUCS_HIGH_MUSDB checkpoint.' \
+            'Code licenses do not establish unrestricted checkpoint redistribution/use.' \
+            'Demucs author discusses scientific-only weights at https://github.com/facebookresearch/demucs/issues/327#issuecomment-1134828611' \
+            'No private/user audio or review data is used in this workflow.' \
+            > observer-research/RESEARCH_SCOPE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdrm-observer-research-checkpoint
+          path: observer-research
+          retention-days: 1
+          compression-level: 0

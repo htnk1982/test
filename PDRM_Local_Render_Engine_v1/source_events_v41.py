@@ -11,11 +11,10 @@ import math
 import numpy as np
 import soundfile as sf
 from scipy import signal
-from scipy.ndimage import uniform_filter1d
 from integration_contract_v40 import capture, digest, Span, integer
 import lowend_boundary_lab as boundary
 
-VERSION = 'source-events-lab-0.1.0'
+VERSION = 'source-events-lab-0.1.1'
 FS = 12000
 HOP = 120  # 10 ms measurement clock, NOT guaranteed timing accuracy.
 EPS = 1e-24
@@ -59,12 +58,25 @@ def _read_12k(handle, first, last):
     return y,origin
 
 
+def sampled_power(z, positions, window):
+    """Positive local sums, not differences of large accumulated powers.
+
+    Running-sum mean filters may erase a tiny tail after a large hit because of
+    subtractive cancellation. Recompute only requested windows, bounded by the
+    current audio chunk, and preserve the even-window centring convention.
+    """
+    sq=np.mean(np.asarray(z,dtype=np.float64)**2,axis=1)
+    padded=np.pad(sq,(window//2,window-1-window//2),mode='edge')
+    windows=np.lib.stride_tricks.sliding_window_view(padded,window)
+    return windows[np.asarray(positions,dtype=np.int64)].mean(axis=1)
+
+
 def extract_features(source, *, anchor_gain_db=0., progress=None, cfg=Config()):
     """Full-song compact features; no full-song high-rate audio array or stems.
 
-    The original boundary feature definition is approximated with one-second
-    halos around each finite chunk. Partition agreement is a measured tolerance,
-    not claimed bitwise equality. Gain is ONE whole-song constant from caller.
+    Finite IIR analysis uses one-second halos. Partition agreement is a measured
+    tolerance, not bitwise identity of filters with infinite theoretical tails.
+    Gain is ONE whole-song constant from caller, never per-chunk normalization.
     """
     cfg.validate(); ident=capture(source)
     if not math.isfinite(anchor_gain_db):raise ValueError('Finite whole-track anchor required')
@@ -85,24 +97,22 @@ def extract_features(source, *, anchor_gain_db=0., progress=None, cfg=Config()):
             loc=positions[indices]-origin
             if len(loc) and (loc[0]<0 or loc[-1]>=len(x)):raise RuntimeError('SRC/grid coverage mismatch')
             def db_envelope(z,seconds=.06):
-                power=uniform_filter1d(np.mean(z*z,axis=1),round(seconds*FS),mode='nearest')
-                return 10*np.log10(np.maximum(power[loc],EPS))+anchor_gain_db
+                power=sampled_power(z,loc,round(seconds*FS))
+                return 10*np.log10(np.maximum(power,EPS))+anchor_gain_db
             results['full_db'][indices]=db_envelope(x)
             for key,sos in filters.items():
                 y=signal.sosfiltfilt(sos,x,axis=0)
-                if key=='activity':
-                    results['fast_db'][indices]=db_envelope(y,.02)
+                if key=='activity':results['fast_db'][indices]=db_envelope(y,.02)
                 else:results[key][indices]=db_envelope(y)
             tonal=signal.sosfiltfilt(signal.butter(4,[80,750],btype='bandpass',fs=FS,output='sos'),x,axis=0)
             results['tonal_fast_db'][indices]=db_envelope(tonal,.02)
             if progress:progress.set('SOURCE_EVENT_SCAN',min(ident.frames,round(stop*ident.samplerate/FS)),ident.frames)
     ident.verify(source)
-    result=dict(results,time=positions/FS,present=results['full_db']>-45,
+    return dict(results,time=positions/FS,present=results['full_db']>-45,
                 low_active=(results['full_db']>-45)&(results['low_db']>-50),
                 configuration=asdict(boundary.Config()),source_identity=asdict(ident),
                 anchor_gain_db=float(anchor_gain_db),feature_version=VERSION,
                 max_analysis_read_frames=max_read,analysis_chunks=chunks)
-    return result
 
 
 def _runs(mask):
@@ -127,19 +137,17 @@ def discover(features, cfg=Config()):
     onsets=[]
     for p in peaks:
         if not active[p]:continue
-        # Locate the rise shoulder, not the novelty peak or a beat grid point.
         lo=max(0,p-round(.08/.01)); before=d[lo:p+1]
         base=float(np.min(before)); top=float(np.max(d[p:min(len(d),p+5)]))
         crossings=np.flatnonzero(before>=base+.2*max(0.,top-base))
         idx=lo+int(crossings[0]) if len(crossings) else int(p)
         if onsets and idx-onsets[-1]<round(cfg.minimum_separation_seconds/.01):continue
         onsets.append(idx)
-    # Activity that starts at a file boundary does not have witnessed pre-onset.
     for a,b in _runs(active):
         if not any(a-2<=i<min(b,a+12) for i in onsets):onsets.append(a)
     onsets=sorted(set(onsets))
     if len(onsets)>cfg.maximum_events:raise RuntimeError('Event capacity exceeded; no silent truncation')
-    events=[]; unresolved=[];sr=ident['samplerate'];n=ident['frames']
+    result=[]; unresolved=[];sr=ident['samplerate'];n=ident['frames']
     for k,a in enumerate(onsets):
         next_onset=onsets[k+1] if k+1<len(onsets) else len(t)
         cap=min(next_onset,a+round(cfg.maximum_event_seconds/.01))
@@ -151,17 +159,16 @@ def discover(features, cfg=Config()):
         if b<=a:continue
         start=max(0,min(n-1,round(t[a]*sr)));end=min(n,round(b*.01*sr))
         if end<=start:continue
-        open_left=a==0;open_right=not release_runs and cap==len(t)
         item=dict(event_id=digest(dict(source=ident['file_sha256'],start=start,stop=end))[:24],
             start_frame=start,stop_frame=end,start_seconds=start/sr,end_seconds=end/sr,
-            onset_supported=not open_left,release_observed=bool(release_runs),
-            left_censored=open_left,right_censored=open_right,
+            onset_supported=a!=0,release_observed=bool(release_runs),
+            left_censored=a==0,right_censored=not release_runs and cap==len(t),
             classification='ACTIVITY_CANDIDATE',role='UNASSIGNED',synthesis_authorized=False,
             pitch_hz=None,periodicity=None,source_sha256=ident['file_sha256'])
-        events.append(item)
+        result.append(item)
         if not release_runs and cap<next_onset:
             unresolved.append(dict(start_frame=end,stop_frame=min(n,round(next_onset*.01*sr)),reason='LONG_ACTIVITY_NOT_FULLY_SEGMENTED'))
-    return dict(events=events,unresolved=unresolved,digital_silence=False,
+    return dict(events=result,unresolved=unresolved,digital_silence=False,
                 healthy_audio_claim=False,scope='Energy-rise event proposals, not complete transcription')
 
 
@@ -172,7 +179,6 @@ def pitch_evidence(source, event):
     length=min(b-a,round(.256*sr)); first=a+(b-a-length)//2
     with sf.SoundFile(source) as f:x,_=_read_12k(f,first,first+length)
     x=x[:round(length*FS/sr)];power=np.mean(x*x,axis=0);mono=x[:,int(np.argmax(power))]
-    # Selecting a non-cancelling channel does not establish centred bass role.
     z=signal.sosfiltfilt(signal.butter(4,[25,750],btype='bandpass',fs=FS,output='sos'),mono)
     z-=z.mean();n=len(z)
     if np.mean(z*z)<1e-16:return dict(event,pitch_status='ABSTAIN_LOW_ENERGY')
@@ -199,7 +205,6 @@ def analyze_source(source,progress=None,cfg=Config()):
     for i,e in enumerate(catalog['events']):
         out.append(pitch_evidence(source,e))
         if progress:progress.set('SOURCE_EVENT_PITCH',i+1,len(catalog['events']))
-    capture(source).verify(source)
     if capture(source).file_sha256!=f['source_identity']['file_sha256']:raise RuntimeError('Source changed during event analysis')
     catalog.update(events=out,source_identity=f['source_identity'],version=VERSION,
                    control_parameters=asdict(cfg),new_octaves_allowed=False)
@@ -214,11 +219,7 @@ def ranges_from_depth(time,depth,rate,length):
 
 
 def schedule(spans, *, rate, length):
-    """8-second overlapping cores. Both contexts observe the same source clock.
-
-    400-ms core edges remain uncertain. Overlap covers internal seams; actual
-    file edges cannot be supplied by zero padding and are reported separately.
-    """
+    """8-second overlapping cores, without pretending file-edge context exists."""
     integer(rate,'rate',1);integer(length,'length',1)
     merged=[]
     for s in sorted(spans,key=lambda s:(s.start,s.stop)):

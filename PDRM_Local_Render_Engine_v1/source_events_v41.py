@@ -14,7 +14,7 @@ from scipy import signal
 from integration_contract_v40 import capture, digest, Span, integer
 import lowend_boundary_lab as boundary
 
-VERSION = 'source-events-lab-0.1.1'
+VERSION = 'source-events-lab-0.1.2'
 FS = 12000
 HOP = 120  # 10 ms measurement clock, NOT guaranteed timing accuracy.
 EPS = 1e-24
@@ -117,7 +117,8 @@ def extract_features(source, *, anchor_gain_db=0., progress=None, cfg=Config()):
 
 def _runs(mask):
     edges=np.diff(np.r_[False,mask,False].astype(int))
-    return list(zip(np.flatnonzero(edges==1),np.flatnonzero(edges==-1)))
+    # Native integers at the boundary avoid numpy.bool_ flags in saved metadata.
+    return [(int(a),int(b)) for a,b in zip(np.flatnonzero(edges==1),np.flatnonzero(edges==-1))]
 
 
 def discover(features, cfg=Config()):
@@ -135,17 +136,18 @@ def discover(features, cfg=Config()):
     peaks,_=signal.find_peaks(novelty,height=cfg.minimum_rise_db,prominence=1.,
                              distance=max(1,round(cfg.minimum_separation_seconds/.01)))
     onsets=[]
-    for p in peaks:
+    for peak in peaks:
+        p=int(peak)
         if not active[p]:continue
         lo=max(0,p-round(.08/.01)); before=d[lo:p+1]
         base=float(np.min(before)); top=float(np.max(d[p:min(len(d),p+5)]))
         crossings=np.flatnonzero(before>=base+.2*max(0.,top-base))
-        idx=lo+int(crossings[0]) if len(crossings) else int(p)
+        idx=lo+int(crossings[0]) if len(crossings) else p
         if onsets and idx-onsets[-1]<round(cfg.minimum_separation_seconds/.01):continue
         onsets.append(idx)
     for a,b in _runs(active):
         if not any(a-2<=i<min(b,a+12) for i in onsets):onsets.append(a)
-    onsets=sorted(set(onsets))
+    onsets=sorted(set(int(v) for v in onsets))
     if len(onsets)>cfg.maximum_events:raise RuntimeError('Event capacity exceeded; no silent truncation')
     result=[]; unresolved=[];sr=ident['samplerate'];n=ident['frames']
     for k,a in enumerate(onsets):

@@ -8,6 +8,7 @@ The application cannot treat this scaffold as a finished taste-trained planner.
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
+import json
 import os
 import shutil
 import numpy as np
@@ -15,7 +16,7 @@ import soundfile as sf
 import lowend_boundary_lab as renderer
 from integration_contract_v40 import RenderSnapshot, Span, digest, valid_hash, capture, integer
 
-VERSION = 'lowend-coordinator-0.1.0'
+VERSION = 'lowend-coordinator-0.1.1'
 LIMITS = {'low': 2.0, 'lowmid': 1.5}
 
 
@@ -94,6 +95,9 @@ def compile_plan(snapshot: RenderSnapshot, proposals, *, planner_id: str,
         lowmid_cut_db=curves['lowmid'].tolist(), proposals=[asdict(p) for p in proposals],
         capabilities=['COMPLEMENTARY_LOW_CUT', 'COMPLEMENTARY_LOWMID_CUT'],
         sub_synthesis='NOT_CONNECTED', semantic_quality='NOT_CERTIFIED')
+    # Canonical plain JSON is part of the plan contract. Tuples in dataclasses
+    # become lists before sealing, so saving/loading cannot invalidate a plan.
+    result = json.loads(json.dumps(result, ensure_ascii=False, allow_nan=False))
     result['sha256'] = digest(result)
     return result
 
@@ -165,7 +169,8 @@ def render(source, physical, destination, snapshot, plan, *, progress=None, chun
         if destination.exists(): raise FileExistsError('Destination appeared; preserved')
         os.rename(temporary, destination)
         return dict(version=VERSION, plan_sha256=plan['sha256'], snapshot_sha256=snapshot.token,
-            assessment=plan['assessment'], waveform_changed=changed,
+            assessment=plan['assessment'], control_requested=changed,
+            waveform_changed=result.pcm_sha256 != snapshot.physical.pcm_sha256,
             output_identity=asdict(result), old_note_sub_called=False,
             sub_synthesis='NOT_CONNECTED', subjective_quality='NOT_EVALUATED')
     except BaseException:

@@ -160,6 +160,19 @@ class ChainTests(unittest.TestCase):
         master=ref/'master.wav';app.common.write_pcm24(out,master)
         self.assertEqual(contracts.capture(master).pcm_sha256,contracts.capture(f/'MASTER.wav').pcm_sha256)
         EVIDENCE.append(dict(case='KEEP_EQUIVALENCE',decoded_pcm_equal=True,old_note_sub_called=False))
+    def test_persisted_plan_cut_keep_abstain(self):
+        class PersistedPlanner(FixturePlanner):
+            def build(self,context,progress=None):
+                plan=super().build(context,progress)
+                return json.loads(json.dumps(plan,ensure_ascii=False,allow_nan=False))
+        states=[]
+        for mode in ('cut','keep','abstain'):
+            with self.subTest(mode=mode):
+                p=PersistedPlanner(mode);r,f=self.run_chain(p,write_mp3=False)
+                self.assertEqual(r['lowend_report']['waveform_changed'],mode=='cut')
+                self.no_work_audio();states.append(r['lowend_assessment'])
+        self.assertEqual(states,['CANDIDATE','KEEP_SUPPORTED','ABSTAIN'])
+        EVIDENCE.append(dict(case='PERSISTED_PLAN_ROUNDTRIP',states=states,all_completed=True))
     @staticmethod
     def record(r,name):
         return dict(case=name,status=r['status'],old_note_sub_called=r['old_note_sub_called'],

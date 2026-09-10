@@ -1,0 +1,50 @@
+name: PDRM Release Task P07-B Crash Recovery
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/crash_recovery_v43.py'
+      - 'PDRM_Local_Render_Engine_v1/processed_integration.py'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_crash_recovery_v43.py'
+      - 'PDRM_Local_Render_Engine_v1/packaging/p07b_crash_worker.py'
+      - 'PDRM_Local_Render_Engine_v1/packaging/verify_p07b.py'
+      - '.github/workflows/pdrm-p07b-crash-recovery.yml'
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - name: Preserve checked source bytes
+        working-directory: .
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1 pyloudnorm==0.2.0 imageio-ffmpeg==0.6.0 psutil==7.0.0
+      - name: Kill real process, recover owned workspace, rerun full chain
+        run: python packaging/verify_p07b.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-P07B-${{ matrix.os }}
+          path: PDRM_Local_Render_Engine_v1/P07B_EVIDENCE
+          if-no-files-found: error
+          retention-days: 30

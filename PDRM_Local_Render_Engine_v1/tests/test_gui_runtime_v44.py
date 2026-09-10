@@ -1,6 +1,5 @@
 from pathlib import Path
 import json,tempfile,unittest
-from unittest.mock import patch
 import numpy as np,soundfile as sf
 import gui_runtime_v44 as g
 from target_settings import Targets
@@ -18,6 +17,14 @@ class RuntimeContracts(unittest.TestCase):
         with self.assertRaises(ValueError):g.read_manifest(self.mp)
     def test_duplicate_source_rejected(self):
         with self.assertRaises(ValueError):g.make_manifest([self.s,self.s],Targets(),False,self.work,self.session,runtime_id='x')
+    def test_same_stem_wav_flac_collision_rejected_before_batch(self):
+        flac=self.r/'a.flac';sf.write(flac,np.zeros((48000,2)),48000,format='FLAC')
+        with self.assertRaisesRegex(ValueError,'output collision'):
+            g.make_manifest([self.s,flac],Targets(),False,self.work,self.session,runtime_id='x')
+        self.assertFalse((self.r/'processed').exists())
+    def test_same_stem_different_folders_allowed(self):
+        other=self.r/'other';other.mkdir();p=other/'a.flac';sf.write(p,np.zeros((48000,2)),48000,format='FLAC')
+        m=g.make_manifest([self.s,p],Targets(),False,self.work,self.session,runtime_id='x');self.assertEqual(len(m['sources']),2)
     def test_empty_rejected(self):
         with self.assertRaises(ValueError):g.make_manifest([],Targets(),False,self.work,self.session,runtime_id='x')
     def test_bad_target_rejected(self):

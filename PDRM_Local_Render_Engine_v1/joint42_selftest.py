@@ -5,22 +5,23 @@ is built/run only for deployment verification and is not the replacement app.
 """
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from dataclasses import asdict
 import argparse,json,sys
+if not getattr(sys,'frozen',False):
+    sys.path.insert(0,str(Path(__file__).resolve().parent/'tests'))
 import numpy as np
 import soundfile as sf
 import integrated_finish_v40 as finish
 import lowend_coordinator_v40 as broad
 import joint_lowend_v42 as joint
 from physical_decay_bridge_v42 import confirm_relative_tail
-from integration_contract_v40 import capture,digest
+from integration_contract_v40 import capture,digest,file_hash
 from target_settings import Targets
 from decay39_fixtures import audio_fixture,audio_atlas,oracle,event
 
 
 class FixturePlanner:
     def __init__(self,mode):
-        self.mode=mode;self.atlas=audio_atlas();self.last_report=None
+        self.mode=mode;self.atlas=audio_atlas(sr=48000);self.last_report=None
     def identity(self):
         return dict(planner_id='joint42_qa_'+self.mode,calibration_sha256=self.atlas['sha256'],evidence_scope='engineering_fixture')
     def preflight(self):
@@ -58,8 +59,10 @@ def run_selftest(out,*,include_stress=True):
     out.mkdir(parents=True,exist_ok=True);records=[]
     with TemporaryDirectory(prefix='pdrm_joint42_qa_') as tmp:
         root=Path(tmp);inp=root/'inputs';inp.mkdir()
-        clean,bad,_=audio_fixture(32000,phase=.35,decay=.74,fault_db=6.)
-        sf.write(inp/'bad.wav',bad,32000,subtype='DOUBLE');sf.write(inp/'clean.wav',clean,32000,subtype='DOUBLE')
+        # Standalone DSP tests cover 32 kHz too. The existing full mastering
+        # chain intentionally supports 44.1/48/88.2/96 kHz; do not relax it.
+        clean,bad,_=audio_fixture(48000,phase=.35,decay=.74,fault_db=6.)
+        sf.write(inp/'bad.wav',bad,48000,subtype='DOUBLE');sf.write(inp/'clean.wav',clean,48000,subtype='DOUBLE')
         cases=[('BYPASS','bad.wav','bypass',-12.),('TAIL','bad.wav','tail',-12.),('JOINT','bad.wav','joint',-12.),('CLEAN_KEEP','clean.wav','tail',-12.)]
         if include_stress:cases.append(('JOINT_STRESS','bad.wav','joint',-10.))
         for name,filename,mode,target in cases:
@@ -80,6 +83,8 @@ def run_selftest(out,*,include_stress=True):
                 codec_routes=[p['auto_report']['auto_route'] for p in r['codec_trials']],
                 wav_lufs=r['master_metrics']['lufs_i'],wav_tp=r['master_metrics']['true_peak_max_dbtp_estimate'],
                 mp3_lufs=r['codec_metrics']['lufs_i'],mp3_tp=r['codec_metrics']['true_peak_max_dbtp_estimate'],
+                master_pcm_sha256=capture(folder/'MASTER.wav').pcm_sha256,
+                mp3_sha256=file_hash(folder/'LISTEN_320kbps.mp3'),ffmpeg_sha256=r['identity']['ffmpeg_sha256'],
                 target_to_peer_db=ratio(folder/'MASTER.wav'),source_unchanged=True,work_bytes_removed=r['work_bytes_removed'],
                 frozen=bool(getattr(sys,'frozen',False)),manual_synthetic_event=True,neural_inference=False,subjective_quality='NOT_EVALUATED')
             records.append(rec);(out/(name+'_REPORT.json')).write_text(json.dumps(r,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')

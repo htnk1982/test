@@ -1,8 +1,8 @@
 """GUI/worker boundary and batch preflight for the future release executable.
 
 DSP never runs on the Tk thread. A sealed manifest fixes inputs/targets and
-refuses sources that would publish to the same processed WAV/MP3. This prevents
-WAV/FLAC same-stem collisions before the first track is processed.
+refuses output collisions. Status publication uses bounded Windows replacement
+retry because the GUI reader or scanner can briefly hold the destination.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -10,7 +10,7 @@ import json,os,subprocess,tempfile,time
 from integration_contract_v40 import digest
 from target_settings import Targets
 
-VERSION='gui-runtime-v0.2.0'
+VERSION='gui-runtime-v0.2.1'
 SCHEMA=1
 STATUS_SCHEMA=1
 MAX_SOURCES=1000
@@ -18,30 +18,37 @@ MAX_SOURCES=1000
 
 def atomic_json(path,value):
     path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
-    fd,name=tempfile.mkstemp(prefix='.gui_',suffix='.tmp',dir=path.parent)
+    fd,name=tempfile.mkstemp(prefix='.gui_',suffix='.tmp',dir=path.parent);tmp=Path(name)
     try:
         with os.fdopen(fd,'w',encoding='utf-8') as f:
             json.dump(value,f,ensure_ascii=False,indent=2,allow_nan=False);f.flush();os.fsync(f.fileno())
-        os.replace(name,path)
-    finally:Path(name).unlink(missing_ok=True)
+        # Windows can deny rename while a poller/indexer briefly holds status.json.
+        # Retry only sharing/access violations, with a finite deadline. Other I/O
+        # errors remain technical failures and are never converted to success.
+        deadline=time.monotonic()+1.0
+        while True:
+            try:
+                os.replace(tmp,path);break
+            except PermissionError:
+                if time.monotonic()>=deadline:raise
+                time.sleep(.005)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _output_key(path):
-    p=Path(path).absolute()
-    # A WAV and FLAC with the same stem in one source directory both target
-    # processed/<stem>.wav and .mp3. Casefold also models Windows name collision.
-    return (str((p.parent/'processed').absolute()).casefold(),p.stem.casefold())
+    p=Path(path).absolute();return (str((p.parent/'processed').absolute()).casefold(),p.stem.casefold())
 
 
 def validate_sources(sources):
-    src=[];keys={}
+    src=[];lower=set();keys={}
     for value in sources:
         p=Path(value).absolute()
         if not p.is_file() or p.suffix.lower() not in ('.wav','.flac'):raise ValueError('Existing WAV/FLAC sources required')
-        text=str(p);key=_output_key(p)
-        if text.casefold() in {v.casefold() for v in src}:raise ValueError('Duplicate source path')
+        text=str(p);fold=text.casefold();key=_output_key(p)
+        if fold in lower:raise ValueError('Duplicate source path')
         if key in keys:raise ValueError('Batch output collision before processing: '+keys[key]+' <-> '+text)
-        src.append(text);keys[key]=text
+        src.append(text);lower.add(fold);keys[key]=text
     if not src or len(src)>MAX_SOURCES:raise ValueError('1-1000 source files required')
     return src
 
@@ -51,9 +58,8 @@ def make_manifest(sources,targets,replace_managed,work_root,session_dir,*,runtim
     if type(replace_managed) is not bool:raise ValueError('Explicit replacement flag required')
     src=validate_sources(sources)
     if not isinstance(runtime_id,str) or not runtime_id:raise ValueError('Runtime identity required')
-    work=Path(work_root).absolute();session=Path(session_dir).absolute()
     body=dict(schema=SCHEMA,version=VERSION,sources=src,targets=targets.to_dict(),replace_managed=replace_managed,
-        work_root=str(work),session_dir=str(session),runtime_id=runtime_id)
+        work_root=str(Path(work_root).absolute()),session_dir=str(Path(session_dir).absolute()),runtime_id=runtime_id)
     body['sha256']=digest(body);return body
 
 
@@ -61,11 +67,8 @@ def read_manifest(path):
     value=json.loads(Path(path).read_text(encoding='utf-8'));p=dict(value);h=p.pop('sha256',None)
     if h!=digest(p) or value.get('schema')!=SCHEMA or value.get('version')!=VERSION:raise ValueError('Worker manifest changed')
     Targets.from_fields(value['targets'])
-    if type(value.get('replace_managed')) is not bool or not isinstance(value.get('runtime_id'),str) or not value['runtime_id']:
-        raise ValueError('Invalid worker manifest')
-    # Revalidate filesystem and output collisions after loading, not only seal.
-    validate_sources(value.get('sources',[]))
-    return value
+    if type(value.get('replace_managed')) is not bool or not isinstance(value.get('runtime_id'),str) or not value['runtime_id']:raise ValueError('Invalid worker manifest')
+    validate_sources(value.get('sources',[]));return value
 
 
 class StatusProgress:
@@ -78,10 +81,8 @@ class StatusProgress:
     def set_file(self,index,total,path):
         self.file_index=int(index);self.file_total=int(total);self.current_file=Path(path).name;self.check_cancel();self._write('FILE_START',0,1,'RUNNING')
     def set(self,stage,done=0,total=0):self.check_cancel();self._write(stage,done,total,'RUNNING')
-    def success(self,path,result):
-        self.completed.append(dict(file=Path(path).name,status='COMPLETE',lowend_assessment=result.get('lowend_assessment')));self._write('FILE_COMPLETE',1,1,'RUNNING')
-    def failure(self,path,exc):
-        self.failures.append(dict(file=Path(path).name,error_type=type(exc).__name__,error=str(exc)));self._write('FILE_FAILED',1,1,'RUNNING')
+    def success(self,path,result):self.completed.append(dict(file=Path(path).name,status='COMPLETE',lowend_assessment=result.get('lowend_assessment')));self._write('FILE_COMPLETE',1,1,'RUNNING')
+    def failure(self,path,exc):self.failures.append(dict(file=Path(path).name,error_type=type(exc).__name__,error=str(exc)));self._write('FILE_FAILED',1,1,'RUNNING')
     def check_cancel(self):
         if self.cancel.exists():raise InterruptedError('GUI cancellation requested')
     def finish(self,status):return self._write(status,1,1,status)

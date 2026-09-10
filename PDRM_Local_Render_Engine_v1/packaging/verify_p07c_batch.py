@@ -13,10 +13,7 @@ def size(root):
     for p in paths:
         try:
             if p.is_file() and not p.is_symlink():total+=p.stat().st_size
-        except (FileNotFoundError,PermissionError,OSError):
-            # Worker legitimately deletes/renames its own temp files while the
-            # external 50-ms monitor is walking them. Missing sample != failure.
-            continue
+        except (FileNotFoundError,PermissionError,OSError):continue
     return total
 
 def monitor(proc,work,timeout=600):
@@ -69,7 +66,8 @@ def main():
         assert collision and not (a/'processed'/'衝突.wav').exists();cw.unlink();cf.unlink()
         targets=Targets();session=sessions/'first';manifest=gui.make_manifest(paths,targets,False,work,session,runtime_id='engineering_fixture_tail');mf=root/'batch.json';gui.atomic_json(mf,manifest)
         first=run_worker(mf,work,OUT/('BATCH1_'+platform.system()+'.log'));status=gui.read_status(session,manifest['sha256'])
-        assert first['returncode']==0 and status['overall']=='COMPLETE_WITH_ERRORS'];assert len(status['completed'])==4 and len(status['failures'])==1 and status['failures'][0]['file']=='99 失敗.wav'
+        assert first['returncode']==0 and status['overall']=='COMPLETE_WITH_ERRORS'
+        assert len(status['completed'])==4 and len(status['failures'])==1 and status['failures'][0]['file']=='99 失敗.wav'
         for p in paths:assert p.read_bytes()==original[str(p)]
         for p in paths[:4]:
             folder=p.parent/'processed';assert (folder/(p.stem+'.wav')).is_file() and (folder/(p.stem+'.mp3')).is_file()

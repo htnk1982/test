@@ -1,0 +1,51 @@
+name: PDRM Joint Low-End Step3 LAB
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/joint_lowend_v42.py'
+      - 'PDRM_Local_Render_Engine_v1/physical_decay_bridge_v42.py'
+      - 'PDRM_Local_Render_Engine_v1/integrated_finish_v40.py'
+      - 'PDRM_Local_Render_Engine_v1/joint42_selftest.py'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_joint42.py'
+      - 'PDRM_Local_Render_Engine_v1/packaging/verify_joint42.py'
+      - 'PDRM_Local_Render_Engine_v1/packaging/build_joint42_qa.py'
+      - '.github/workflows/pdrm-joint42-lab.yml'
+permissions:
+  contents: read
+jobs:
+  contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - name: Preserve source bytes
+        working-directory: .
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1 pyloudnorm==0.2.0 imageio-ffmpeg==0.6.0 psutil==7.0.0
+      - name: Existing regression and joint final-audio tests
+        run: python packaging/verify_joint42.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-joint42-${{ matrix.os }}
+          path: PDRM_Local_Render_Engine_v1/JOINT42_EVIDENCE
+          if-no-files-found: error
+          retention-days: 30

@@ -1,9 +1,8 @@
-"""EXE-integration step 1, an explicit-planner LAB API, NOT the production GUI.
+"""Explicit-planner integration LAB. Not the production GUI entry.
 
-Actual path: SOURCE -> existing HE -> existing AUTO prep -> coordinator (replaces
-old Note-Sub CALLS) -> existing HFTC -> existing AUTO master -> decoded MP3 QC.
-No mutable base-module monkeypatching and no default/hidden KEEP planner.
-Model choice, automatic musical planning and calibrated additions remain pending.
+Actual existing HE/AUTO/HFTC/codec are retained. Backend selection is explicit,
+from a fixed registry: original broad path or joint broad+narrow path. A JSON
+plan never imports code. Model/planner/taste approval are separate release gates.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -23,7 +22,7 @@ from target_settings import Targets
 import lowend_coordinator_v40 as coordinator
 from integration_contract_v40 import AudioIdentity, RenderSnapshot, capture, digest, file_hash, valid_hash
 
-VERSION = 'integrated-finish-lab-0.1.0'
+VERSION = 'integrated-finish-lab-0.2.0'
 MODULES = ('integration_contract_v40.py', 'lowend_coordinator_v40.py', 'integrated_finish_v40.py',
            'lowend_boundary_lab.py', 'distribution_finish.py', 'auto_peak_v34.py',
            'hf_temporal_contrast_lab.py', 'offline_peak_stream_v34.py',
@@ -40,17 +39,9 @@ class PlanningContext:
 
 
 class Planner(Protocol):
-    def identity(self) -> dict:
-        """Finite JSON, with planner_id, calibration_sha256 and evidence_scope."""
-        ...
-
-    def preflight(self) -> None:
-        """Check required models/config before processing. Do not download here."""
-        ...
-
-    def build(self, context: PlanningContext, progress=None) -> dict:
-        """Return a sealed common-snapshot plan. No modification of input files."""
-        ...
+    def identity(self) -> dict: ...
+    def preflight(self) -> None: ...
+    def build(self, context: PlanningContext, progress=None) -> dict: ...
 
 
 def _verify_audio(path, template, lufs, tp, progress, stage):
@@ -111,22 +102,26 @@ def _proof(final, identity):
 
 
 def run_lab(source, root, planner: Planner | None, *, targets=None, write_mp3=True,
-            enable_lab=False, progress=None):
-    """Library API used by integration tests; deliberately absent from GUI.
+            enable_lab=False, progress=None, render_backend='broad-v40'):
+    """Finite, explicitly requested LAB path; production entry is unchanged.
 
-    This does NOT resume a crashed job or publish into the user's processed
-    folder yet. It owns only a newly created temporary job, removes it on success,
-    failure and cancellation, and publishes a proof-verified LAB result folder.
-    Missing observer/planner is NOT replaced by the known-bad legacy generator.
+    Does not yet resume a crash or publish into processed. Only a newly owned
+    temporary job is cleaned. Backend identity is included in cached outputs.
     """
     if enable_lab is not True:
         raise RuntimeError('Release blocked: automatic planner/model acceptance is not complete')
+    if render_backend == 'broad-v40':
+        engine=coordinator;extra_modules=()
+    elif render_backend == 'joint-v42':
+        import joint_lowend_v42 as engine
+        extra_modules=('joint_lowend_v42.py','physical_decay_bridge_v42.py')
+    else:
+        raise ValueError('Unknown fixed-registry renderer; no dynamic module import')
     if planner is None:
         raise ValueError('An explicit planner is required; no silent KEEP fallback')
     pid = planner.identity()
     if not isinstance(pid, dict) or not isinstance(pid.get('planner_id'), str) or not pid['planner_id'] or not valid_hash(pid.get('calibration_sha256')) or pid.get('evidence_scope') not in ('engineering_fixture','research_observer'):
         raise ValueError('Invalid LAB planner identity')
-    # Copy through canonical JSON. Later mutation of a provider's dict is caught.
     pid = json.loads(json.dumps(pid, sort_keys=True, allow_nan=False))
     planner.preflight()
     targets = (targets or Targets()).validate()
@@ -139,11 +134,10 @@ def run_lab(source, root, planner: Planner | None, *, targets=None, write_mp3=Tr
     original = capture(source)
     common.legacy.verify_dsp(); auto.verify_kernel()
     ff = io.ffmpeg_path()
-    # AUTO may require its existing limiter, even when MP3 is not requested.
     if not ff: raise RuntimeError('FFmpeg required for existing AUTO safety policy')
     common.peak.check_ffmpeg(ff)
-    identity = dict(version=VERSION, source=original.token, planner=pid,
-        code={name:file_hash(Path(__file__).with_name(name)) for name in MODULES},
+    identity = dict(version=VERSION, source=original.token, planner=pid,render_backend=render_backend,
+        code={name:file_hash(Path(__file__).with_name(name)) for name in MODULES+extra_modules},
         targets=targets.to_dict(), write_mp3=write_mp3, ffmpeg_sha256=file_hash(ff),
         versions={n:importlib.metadata.version(n) for n in ('numpy','scipy','soundfile','pyloudnorm')})
     key = digest(identity)[:24]
@@ -159,8 +153,6 @@ def run_lab(source, root, planner: Planner | None, *, targets=None, write_mp3=Tr
         try:
             with TemporaryDirectory(prefix='.integration40_', dir=root) as owned:
                 owned = Path(owned); work = owned/'work'; work.mkdir(); stage = owned/'result'; stage.mkdir()
-                # Existing progress supports cancellation and heartbeat. External
-                # tests may provide a progress sink to inject cancellation.
                 with io.Progress(work) as default_progress:
                     pr = progress or default_progress
                     he = work/'HARMONIC.wav'; common.render_harmonic(source, he, pr)
@@ -177,10 +169,10 @@ def run_lab(source, root, planner: Planner | None, *, targets=None, write_mp3=Tr
                     if planner.identity() != pid: raise RuntimeError('Planner identity changed mid-job')
                     if not isinstance(plan, dict) or any(plan.get(k) != pid[k] for k in ('planner_id','calibration_sha256','evidence_scope')):
                         raise ValueError('Plan provenance differs from selected planner')
-                    snapshot.verify(source, physical); coordinator.validate_plan(plan, snapshot)
+                    snapshot.verify(source, physical); engine.validate_plan(plan, snapshot)
                     note = work/'LOWEND.wav'
                     state = 'LOWEND_RENDER'
-                    low = coordinator.render(source, physical, note, snapshot, plan, progress=pr)
+                    low = engine.render(source, physical, note, snapshot, plan, progress=pr)
                     nm = auto.measure(note, pr, 'LOWEND_QC')
                     if nm['lufs_i'] is None: raise RuntimeError('Low-end candidate is silent')
                     state = 'HFTC'
@@ -199,16 +191,15 @@ def run_lab(source, root, planner: Planner | None, *, targets=None, write_mp3=Tr
                     report = dict(version=VERSION, status='LAB_RENDER_COMPLETE_NOT_LISTENING_APPROVED',
                         identity=identity, source_name=source.name, source_unchanged=True,
                         chain='HE -> AUTO_PREP -> NEW_LOWEND_COORDINATOR -> HFTC -> AUTO_MASTER -> CODEC_QC',
-                        old_note_sub_called=False, sub_synthesis='NOT_CONNECTED',
+                        old_note_sub_called=False, sub_synthesis='NOT_CONNECTED',render_backend=render_backend,
                         lowend_assessment=plan['assessment'], lowend_report=low,
+                        planner_report=getattr(planner,'last_report',None),
                         planner_evidence_scope=pid['evidence_scope'], snapshot_sha256=snapshot.token,
                         requested_targets=targets.to_dict(), preparation=prep, master=master_report,
                         master_metrics=mq, codec_metrics=cm, codec_trials=trials, hf_stats=hf_stats,
                         hf_cache=hf_cache, calibration_is_personal_taste_approval=False,
                         production_gui_changed=False, resume_supported=False)
                     pr.set('LAB_AUDIO_VERIFIED', 1, 1)
-                # The temporary dir is exclusively created for this invocation.
-                # No source/processed/backup paths are accepted by cleanup.
                 work_bytes = sum(p.stat().st_size for p in work.rglob('*') if p.is_file())
                 shutil.rmtree(work)
                 if work.exists(): raise RuntimeError('Job workspace cleanup incomplete')
@@ -217,8 +208,8 @@ def run_lab(source, root, planner: Planner | None, *, targets=None, write_mp3=Tr
                 io.atomic_json(stage/'RUN_REPORT.json', report)
                 (stage/'完了.md').write_text('# PDRM 統合LAB\n\n'
                     '既存HE・AUTO・HFTCへ、新低域入口を接続した研究結果です。新規サブ生成は未接続。\n'
-                    '自動音楽判定・実曲の改善・配布版の完成を意味しません。\n'
-                    f'低域判断: {plan["assessment"]}。前段: {prep["auto_route"]}。最終: {master_report["auto_route"]}。\n'
+                    '実曲の改善・配布版の完成を意味しません。\n'
+                    f'低域描画: {render_backend}。判断: {plan["assessment"]}。前段: {prep["auto_route"]}。最終: {master_report["auto_route"]}。\n'
                     f'WAV: {mq["lufs_i"]:.5f} LUFS / {mq["true_peak_max_dbtp_estimate"]:.5f} dBTP。\n'
                     f'中間作業物削除: {work_bytes} bytes。元音源は未変更。\n', encoding='utf-8')
                 io.atomic_json(stage/'PROOF.json', dict(identity=identity,
@@ -228,7 +219,6 @@ def run_lab(source, root, planner: Planner | None, *, targets=None, write_mp3=Tr
                 os.rename(stage, final)
             return _proof(final, identity), final
         except BaseException as exc:
-            # Includes cancellation. No fallback to a different musical planner.
             io.atomic_json(root/(key+'.failure.json'), dict(version=VERSION, stage=state,
                 error_type=type(exc).__name__, error=str(exc), status='LAB_NOT_COMPLETED'))
             raise

@@ -15,6 +15,22 @@ def worker(path):
     return gui_worker_entry_v44.run_manifest(path)
 
 
+def _checkpoint(output,stage,records,current=None,success=False):
+    payload=dict(success=success,stage=stage,frozen=bool(getattr(sys,'frozen',False)),
+        records=list(records)+([] if current is None else [current]),
+        actual_tk_mainloop_callbacks=True,separate_worker_process=True,
+        product_runtime_open=False,private_music=False,neural_inference=False,
+        scope='FROZEN_GUI_WORKER_QA;_NOT_RELEASE_APP')
+    Path(output).write_text(json.dumps(payload,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+    print('P06A_FROZEN_DIAG '+json.dumps(payload,ensure_ascii=False),flush=True)
+    return payload
+
+
+def _require(ok,label,output,records,current):
+    _checkpoint(output,label,records,current,success=False)
+    if not ok:raise AssertionError(label+' '+json.dumps(current,ensure_ascii=False))
+
+
 def full_self_test(output):
     import tkinter as tk
     import numpy as np,soundfile as sf
@@ -47,20 +63,21 @@ def full_self_test(output):
                 process.kill();process.wait();root.destroy();raise TimeoutError('Frozen GUI did not finish')
             process.wait(timeout=20);root.update();root.destroy()
             final=done[-1] if done else dialog.last
-            result=dict(name=name,overall=final['overall'],worker_returncode=process.returncode,ui_ticks=len(ticks),
-                current_file_seen=bool(final.get('current_file')),owned_work_left=len(list(work.glob('.pdrm-owned-*'))),
-                wav_exists=(source_dir/'processed'/(name+'.wav')).exists(),mp3_exists=(source_dir/'processed'/(name+'.mp3')).exists())
+            result=dict(name=name,overall=None if final is None else final.get('overall'),
+                final_status=final,worker_returncode=process.returncode,ui_ticks=len(ticks),
+                current_file_seen=bool(final and final.get('current_file')),owned_work_left=len(list(work.glob('.pdrm-owned-*'))),
+                wav_exists=(source_dir/'processed'/(name+'.wav')).exists(),mp3_exists=(source_dir/'processed'/(name+'.mp3')).exists(),
+                status_file_exists=(session/'status.json').exists(),cancel_sent=dialog.cancel_sent)
             return result
         good=execute('01 完走',bad,Targets(wav_lufs=-12.5,wav_tp=-2.3,mp3_lufs=-14.5,mp3_tp=-2.2))
-        assert good['overall']=='COMPLETE' and good['worker_returncode']==0 and good['ui_ticks']>=5 and good['wav_exists'] and good['mp3_exists'] and not good['owned_work_left']
+        _require(good['overall']=='COMPLETE' and good['worker_returncode']==0 and good['ui_ticks']>=5 and good['wav_exists'] and good['mp3_exists'] and not good['owned_work_left'],
+            'COMPLETE_CASE',output,records,good)
         records.append(good)
         cancelled=execute('02 キャンセル',np.tile(bad,(8,1)),Targets(),cancel_ms=300)
-        assert cancelled['overall']=='CANCELLED' and cancelled['worker_returncode']==0 and cancelled['ui_ticks']>=2 and not cancelled['owned_work_left']
+        _require(cancelled['overall']=='CANCELLED' and cancelled['worker_returncode']==0 and cancelled['ui_ticks']>=2 and not cancelled['owned_work_left'],
+            'CANCEL_CASE',output,records,cancelled)
         records.append(cancelled)
-    report=dict(success=True,frozen=bool(getattr(sys,'frozen',False)),records=records,
-        actual_tk_mainloop_callbacks=True,separate_worker_process=True,product_runtime_open=False,
-        private_music=False,neural_inference=False,scope='FROZEN_GUI_WORKER_QA;_NOT_RELEASE_APP')
-    Path(output).write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+    _checkpoint(output,'PASS',records,success=True)
     return 0
 
 

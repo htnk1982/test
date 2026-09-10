@@ -1,0 +1,43 @@
+name: PDRM Release Task P02 Spleeter Asset
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/packaging/verify_spleeter_asset_v45.py'
+      - '.github/workflows/pdrm-p02-spleeter-asset.yml'
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      PYTHONUTF8: '1'
+      TF_CPP_MIN_LOG_LEVEL: '2'
+      OMP_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Spleeter isolated observer dependencies
+        run: python -m pip install spleeter==2.4.2 scipy==1.10.1 soundfile==0.12.1
+      - name: Official asset checksum, extraction, analysis-only inference
+        run: python packaging/verify_spleeter_asset_v45.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-P02-spleeter-${{ matrix.os }}
+          path: PDRM_Local_Render_Engine_v1/P02_SPLEETER_EVIDENCE
+          if-no-files-found: error
+          retention-days: 30

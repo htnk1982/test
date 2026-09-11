@@ -37,15 +37,26 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Spleeter 2.4.2 pins tensorflow-io-gcs-filesystem==0.32.0, for which
-          # PyPI publishes no Windows wheel. Local model inference does not use
-          # the GCS filesystem plugin. Install the declared runtime dependencies
-          # explicitly, omit only that unavailable cloud-I/O plugin, then install
-          # the exact Spleeter wheel without dependency re-resolution. The actual
-          # official asset inference below is the acceptance condition.
+          # Spleeter 2.4.2 metadata requires tensorflow-io-gcs-filesystem==0.32.0,
+          # but PyPI has no 0.32.0 Windows wheel. TensorFlow 2.12.1 itself selects
+          # the available 0.31.0 Windows wheel. Local Spleeter model inference does
+          # not use GCS I/O. Keep this mismatch explicit; any OTHER pip-check issue
+          # is fatal, and the official-asset inference below is the real acceptance.
           python -m pip install "tensorflow==2.12.1" "numpy==1.23.5" "scipy==1.10.1" "soundfile==0.12.1" "pandas==1.5.3" "norbert==0.2.1" "ffmpeg-python==0.2.0" "httpx[http2]==0.19.0" "typer==0.3.2"
           python -m pip install --no-deps spleeter==2.4.2
-          python -m pip check | Tee-Object -FilePath P02_WINDOWS_PIP_CHECK.txt
+          @'
+          import pathlib, subprocess, sys
+          p=subprocess.run([sys.executable,'-m','pip','check'],text=True,capture_output=True)
+          text=(p.stdout+p.stderr).strip()
+          pathlib.Path('P02_WINDOWS_PIP_CHECK.txt').write_text(text+'\n',encoding='utf-8')
+          lines=[v.strip() for v in text.splitlines() if v.strip()]
+          allowed='spleeter 2.4.2 has requirement tensorflow-io-gcs-filesystem==0.32.0, but you have tensorflow-io-gcs-filesystem 0.31.0.'
+          unexpected=[v for v in lines if v != allowed]
+          if unexpected:
+              print('Unexpected dependency mismatch:',unexpected)
+              raise SystemExit(1)
+          print('Known Windows-only metadata mismatch recorded; continuing to actual local inference.')
+          '@ | python -
       - name: Official asset checksum, extraction, analysis-only inference
         run: python packaging/verify_spleeter_asset_v45.py
       - uses: actions/upload-artifact@v4

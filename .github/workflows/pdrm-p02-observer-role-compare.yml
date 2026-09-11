@@ -1,0 +1,57 @@
+name: PDRM P02 Observer Role Comparison
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/packaging/compare_observer_roles_v47.py'
+      - 'PDRM_Local_Render_Engine_v1/observer_worker_spleeter_v47.py'
+      - '.github/workflows/pdrm-p02-observer-role-compare.yml'
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      PYTHONUTF8: '1'
+      TF_CPP_MIN_LOG_LEVEL: '2'
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+      PDRM_HDEMUCS_CHECKPOINT: ${{ github.workspace }}/PDRM_Local_Render_Engine_v1/.research/hdemucs_high_musdbhq_only.pt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install candidate and research-only comparison dependencies
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1 torchaudio==2.5.1
+          python -m pip install spleeter==2.4.2 scipy==1.10.1 soundfile==0.12.1
+      - name: Fetch hash-pinned HDEMUCS research checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .research
+          curl --fail --location --retry 2 --connect-timeout 30 --max-time 300 \
+            https://download.pytorch.org/torchaudio/models/hdemucs_high_musdbhq_only.pt \
+            -o .research/hdemucs_high_musdbhq_only.pt
+          echo '85ce4420e0852344b816487b4c4bb821bd406376b93bf684b2b76aa56404c46a  .research/hdemucs_high_musdbhq_only.pt' | sha256sum -c -
+      - name: Compare PDRM role counterexamples, no private audio
+        run: python packaging/compare_observer_roles_v47.py
+      - name: Remove research checkpoint before artifact upload
+        if: always()
+        shell: bash
+        run: rm -rf .research
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-P02-observer-role-comparison
+          path: PDRM_Local_Render_Engine_v1/P02_ROLE_COMPARISON_EVIDENCE
+          if-no-files-found: warn
+          retention-days: 30

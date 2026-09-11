@@ -4,8 +4,14 @@ on:
     branches: [pdrm-note-sub-lab-v1]
     paths:
       - 'PDRM_Local_Render_Engine_v1/automatic_joint_v48.py'
+      - 'PDRM_Local_Render_Engine_v1/automatic_joint_v49.py'
+      - 'PDRM_Local_Render_Engine_v1/automatic_joint_v50.py'
+      - 'PDRM_Local_Render_Engine_v1/relative_low_dominance_v49.py'
+      - 'PDRM_Local_Render_Engine_v1/physical_add_bridge_v50.py'
+      - 'PDRM_Local_Render_Engine_v1/same_f0_permission_v50.py'
       - 'PDRM_Local_Render_Engine_v1/spleeter_observer_adapter_v48.py'
       - 'PDRM_Local_Render_Engine_v1/tests/test_automatic_joint48.py'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_same_f0_fallback50.py'
       - 'PDRM_Local_Render_Engine_v1/packaging/verify_p03a_automatic_joint.py'
       - '.github/workflows/pdrm-p03a-automatic-joint.yml'
 permissions:

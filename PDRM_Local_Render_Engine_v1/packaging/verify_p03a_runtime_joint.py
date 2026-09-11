@@ -32,7 +32,7 @@ def weak_song(sr=48000,seconds=8.,scale=1.):
     return np.column_stack((bass+bed,bass+.92*bed))
 
 
-def reference(sr=48000,seconds=8.,phase=0.,level=.03):
+def reference(sr=48000,seconds=8.,phase=0.,level=.11):
     t=np.arange(round(sr*seconds))/sr;low=np.zeros_like(t)
     for a,b,f in ((.8,1.2,55.),(2.0,2.5,73.4),(3.5,4.15,110.),(5.3,5.7,55.)):
         g=gate(t,a,b);low+=level*g*(np.sin(2*np.pi*f*t+phase)+.45*np.sin(4*np.pi*f*t)+.2*np.sin(6*np.pi*f*t))
@@ -47,7 +47,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='pdrm_p03a_runtime_') as td:
         root=Path(td);refs=root/'refs';inputs=root/'inputs';refs.mkdir();inputs.mkdir();specs=[]
         for i in range(4):
-            p=refs/f'ref{i}.wav';sf.write(p,reference(phase=.19*i,level=.027+.002*i),48000,subtype='DOUBLE');specs.append(dict(path=p,role='bass',quality='positive'))
+            p=refs/f'ref{i}.wav';sf.write(p,reference(phase=.19*i,level=.105+.004*i),48000,subtype='DOUBLE');specs.append(dict(path=p,role='bass',quality='positive'))
         bundle=broad41.make_calibration(specs);source=inputs/'自動判断 弱い基音.wav';sf.write(source,weak_song(),48000,subtype='DOUBLE');before=capture(source)
         observer=SpleeterRuntimeObserver(CAPSULE,work_root=root/'observer-ipc',timeout=300);planner=planner48.AutomaticJointPlanner(bundle,observer)
         report,folder=finish.run_lab(source,root/'work',planner,targets=Targets(),enable_lab=True,render_backend='joint-v46')
@@ -55,22 +55,18 @@ def main():
         if 'tensorflow' in sys.modules or 'spleeter' in sys.modules:raise RuntimeError('TensorFlow/Spleeter leaked into main process')
         pr=report['planner_report'];low=report['lowend_report']
         if pr['manual_event_times_used'] is not False or pr['observer_provider']!='spleeter_runtime48':raise RuntimeError('Automatic/runtime provenance failed')
-        if pr['automatically_discovered_events']<1 or pr['tonal_same_f0_candidates']<1:raise RuntimeError('Source-driven event/pitch discovery failed')
-        if pr['accepted_additions']<1 or low['same_fundamental_additions']<1:raise RuntimeError('Real observer did not drive same-fundamental repair')
+        if pr['automatically_discovered_events']<1 or pr['tonal_same_f0_candidates']<1:raise RuntimeError('Source-driven event/pitch discovery failed: '+json.dumps(pr['source_same_f0_refinements']))
+        if pr['accepted_additions']<1 or low['same_fundamental_additions']<1:raise RuntimeError('Real observer did not drive same-fundamental repair: '+json.dumps(pr['addition_records']))
         if report['old_note_sub_called'] is not False or report['sub_synthesis']!='SAME_FUNDAMENTAL_ONLY_CONNECTED':raise RuntimeError('Legacy/wrong sub path used')
         if not (folder/'MASTER.wav').is_file() or not (folder/'LISTEN_320kbps.mp3').is_file():raise RuntimeError('Final outputs missing')
         if report['master_metrics']['true_peak_max_dbtp_estimate']>-2 or report['codec_metrics']['true_peak_max_dbtp_estimate']>-2:raise RuntimeError('Final TP target failed')
         if (root/'observer-ipc').exists() and any((root/'observer-ipc').iterdir()):raise RuntimeError('Observer IPC leaked')
-        evidence=dict(success=True,task='P03-A-real-observer-full-chain',platform=platform.platform(),main_python=sys.version,
-            source_sha256=before.file_sha256,source_unchanged=True,manual_event_times_used=False,automatically_discovered_events=pr['automatically_discovered_events'],
-            tonal_candidates=pr['tonal_same_f0_candidates'],accepted_additions=pr['accepted_additions'],observer_provider=pr['observer_provider'],
-            observer_model_asset_sha256=pr['observer_identity']['model_asset_sha256'],observer_runtime_manifest_sha256=pr['observer_identity']['runtime_manifest_sha256'],
-            main_imported_tensorflow=False,main_imported_spleeter=False,stem_audio_in_master=False,old_note_sub_called=False,
-            lowend_assessment=report['lowend_assessment'],master_route=report['master']['auto_route'],wav_lufs=report['master_metrics']['lufs_i'],
-            wav_tp=report['master_metrics']['true_peak_max_dbtp_estimate'],mp3_lufs=report['codec_metrics']['lufs_i'],mp3_tp=report['codec_metrics']['true_peak_max_dbtp_estimate'],
-            master_sha256=file_hash(folder/'MASTER.wav'),mp3_sha256=file_hash(folder/'LISTEN_320kbps.mp3'),private_audio_used=False,subjective_quality='NOT_EVALUATED',product_release=False)
-        (OUT/'SUMMARY.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
-        print('P03A_RUNTIME '+json.dumps(evidence,ensure_ascii=True),flush=True)
+        evidence=dict(success=True,task='P03-A-real-observer-full-chain',platform=platform.platform(),main_python=sys.version,source_sha256=before.file_sha256,source_unchanged=True,manual_event_times_used=False,
+            automatically_discovered_events=pr['automatically_discovered_events'],tonal_candidates=pr['tonal_same_f0_candidates'],accepted_additions=pr['accepted_additions'],observer_provider=pr['observer_provider'],
+            observer_model_asset_sha256=pr['observer_identity']['model_asset_sha256'],observer_runtime_manifest_sha256=pr['observer_identity']['runtime_manifest_sha256'],main_imported_tensorflow=False,main_imported_spleeter=False,
+            stem_audio_in_master=False,old_note_sub_called=False,lowend_assessment=report['lowend_assessment'],master_route=report['master']['auto_route'],wav_lufs=report['master_metrics']['lufs_i'],wav_tp=report['master_metrics']['true_peak_max_dbtp_estimate'],
+            mp3_lufs=report['codec_metrics']['lufs_i'],mp3_tp=report['codec_metrics']['true_peak_max_dbtp_estimate'],master_sha256=file_hash(folder/'MASTER.wav'),mp3_sha256=file_hash(folder/'LISTEN_320kbps.mp3'),private_audio_used=False,subjective_quality='NOT_EVALUATED',product_release=False)
+        (OUT/'SUMMARY.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8');print('P03A_RUNTIME '+json.dumps(evidence,ensure_ascii=True),flush=True)
     shutil.rmtree(ROOT/'P02_CAPSULE_WORK',ignore_errors=False)
     if (ROOT/'P02_CAPSULE_WORK').exists():raise RuntimeError('Large observer runtime retained after acceptance')
 

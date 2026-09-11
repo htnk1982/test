@@ -12,7 +12,7 @@ import math
 import numpy as np
 import event_groove_v37 as legacy
 
-VERSION='same-f0-permission-lab-0.2.0'
+VERSION='same-f0-permission-lab-0.2.1'
 
 @dataclass(frozen=True)
 class Config:
@@ -49,11 +49,14 @@ def _source_vetoes(source_proof,source_shape,cfg):
 def permit(event,arrays,meta,source_digest,source_proof,source_shape,cfg=Config()):
     cfg.validate();baseline=legacy.permit(event,arrays,meta,source_digest)
     source_reasons,ratio,upper_fraction=_source_vetoes(source_proof,source_shape,cfg)
-    # Structural denials always win. A local-role abstention is the *only* legacy
-    # decision that can enter the grouped-role fallback.
-    structural=[r for r in baseline.get('reason_codes',[]) if r!='ABSTAIN_LOCAL_ROLE_OR_PITCH']
-    if structural:
-        return dict(baseline,allowed=False,permission_version=VERSION,permission_path='LEGACY_DENIAL_PRESERVED',envelope_role_indices=[2],source_shape=source_shape,source_proof=source_proof,source_veto_reasons=source_reasons)
+    # A successful legacy decision carries the informational reason marker
+    # ALLOW_SAME_FUNDAMENTAL_CANDIDATE. Never reinterpret that ALLOW marker as a
+    # structural denial. Only reasons from an actually denied baseline can win
+    # before v50's source-shape safety gate.
+    if not baseline['allowed']:
+        structural=[r for r in baseline.get('reason_codes',[]) if r!='ABSTAIN_LOCAL_ROLE_OR_PITCH']
+        if structural:
+            return dict(baseline,allowed=False,permission_version=VERSION,permission_path='LEGACY_DENIAL_PRESERVED',envelope_role_indices=[2],source_shape=source_shape,source_proof=source_proof,source_veto_reasons=source_reasons)
     # Even a strict legacy ALLOW is subject to the original-source weak-f0 and
     # brightness veto. This prevents a stable 55-Hz deep voice from being repaired.
     if baseline['allowed']:

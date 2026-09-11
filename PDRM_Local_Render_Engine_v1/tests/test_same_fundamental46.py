@@ -104,8 +104,9 @@ class ChainPlanner:
 class FullChain(unittest.TestCase):
     def test_same_fundamental_reaches_wav_mp3_without_legacy_sub(self):
         with tempfile.TemporaryDirectory() as td:
-            r=Path(td);src=r/'source.wav';sf.write(src,waveform(),48000,subtype='DOUBLE');planner=ChainPlanner()
-            report,folder=finish.run_lab(src,r/'work',planner,targets=Targets(),enable_lab=True,render_backend='joint-v46')
+            root=Path(td);inputs=root/'inputs';work=root/'work';inputs.mkdir()
+            src=inputs/'source.wav';sf.write(src,waveform(),48000,subtype='DOUBLE');planner=ChainPlanner()
+            report,folder=finish.run_lab(src,work,planner,targets=Targets(),enable_lab=True,render_backend='joint-v46')
             self.assertEqual(report['sub_synthesis'],'SAME_FUNDAMENTAL_ONLY_CONNECTED');self.assertFalse(report['old_note_sub_called']);self.assertEqual(report['lowend_report']['same_fundamental_additions'],1)
             self.assertTrue((folder/'MASTER.wav').is_file() and (folder/'LISTEN_320kbps.mp3').is_file());self.assertLessEqual(report['master_metrics']['true_peak_max_dbtp_estimate'],-2)
             self.assertLessEqual(report['codec_metrics']['true_peak_max_dbtp_estimate'],-2);self.assertTrue(report['intermediate_audio_removed'])

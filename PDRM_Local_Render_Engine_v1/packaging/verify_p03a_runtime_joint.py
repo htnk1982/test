@@ -2,8 +2,9 @@
 
 No private audio. The main Python 3.12 process never imports TensorFlow/Spleeter.
 Event times are discovered by source_events_v41; the verifier does not pass them.
-The weak-fundamental fixture is deliberately context-ambiguous for Spleeter, so
-v50's conservative existing-f0 fallback must be the path that accepts addition.
+Every accepted same-f0 addition must have passed v50's original-source vetoes;
+legacy strict or grouped fallback is acceptable, but this fixture is expected to
+exercise the grouped fallback if Spleeter reproduces the observed ambiguity.
 """
 from pathlib import Path
 import json,platform,shutil,sys,tempfile
@@ -57,23 +58,22 @@ def main():
         pr=report['planner_report'];low=report['lowend_report']
         if pr['manual_event_times_used'] is not False or pr['observer_provider']!='spleeter_runtime48':raise RuntimeError('Automatic/runtime provenance failed')
         if pr['automatically_discovered_events']<1 or pr['tonal_same_f0_candidates']<1:raise RuntimeError('Source-driven event/pitch discovery failed: '+json.dumps(pr['source_same_f0_refinements']))
-        if pr.get('fallback_accepted',0)<1:raise RuntimeError('Real observer did not enter conservative fallback: '+json.dumps(pr.get('fallback_records',[])))
-        if pr['accepted_additions']<1 or low['same_fundamental_additions']<1:raise RuntimeError('Real observer did not drive same-fundamental repair: '+json.dumps(dict(addition_records=pr['addition_records'],fallback=pr.get('fallback_records'),relative_low=pr['relative_low'])))
-        accepted=[r for r in pr['fallback_records'] if r.get('planner_resolution')=='FALLBACK_ADD_ACCEPTED']
-        if not accepted or accepted[0]['evidence']['source_decision']['permission_path']!='EXISTING_WEAK_F0_FALLBACK':raise RuntimeError('Wrong fallback permission path')
-        if accepted[0]['evidence']['source_shape']['focus_upper_fraction']>.05 or accepted[0]['evidence']['source_proof']['fundamental_to_upper_ratio']>.15:raise RuntimeError('Fallback source-shape/weakness budget exceeded')
+        accepted=[r for r in pr.get('v50_same_f0_records',[]) if r.get('planner_resolution')=='V50_ADD_ACCEPTED']
+        if pr.get('v50_accepted',0)<1 or not accepted or low['same_fundamental_additions']<1:raise RuntimeError('Real observer did not drive v50 same-f0 repair: '+json.dumps(dict(v50=pr.get('v50_same_f0_records'),relative_low=pr['relative_low'])))
+        decision=accepted[0]['evidence']['source_decision'];path=decision['permission_path']
+        if path not in ('LEGACY_STRICT_WITH_SOURCE_VETO','EXISTING_WEAK_F0_FALLBACK'):raise RuntimeError('Wrong v50 permission path '+str(path))
+        if accepted[0]['evidence']['source_shape']['focus_upper_fraction']>.05 or accepted[0]['evidence']['source_proof']['fundamental_to_upper_ratio']>.15:raise RuntimeError('v50 source-shape/weakness budget exceeded')
         if report['old_note_sub_called'] is not False or report['sub_synthesis']!='SAME_FUNDAMENTAL_ONLY_CONNECTED':raise RuntimeError('Legacy/wrong sub path used')
         if not (folder/'MASTER.wav').is_file() or not (folder/'LISTEN_320kbps.mp3').is_file():raise RuntimeError('Final outputs missing')
         if report['master_metrics']['true_peak_max_dbtp_estimate']>-2 or report['codec_metrics']['true_peak_max_dbtp_estimate']>-2:raise RuntimeError('Final TP target failed')
         if (root/'observer-ipc').exists() and any((root/'observer-ipc').iterdir()):raise RuntimeError('Observer IPC leaked')
         evidence=dict(success=True,task='P03-A-real-observer-full-chain-v50',platform=platform.platform(),main_python=sys.version,source_sha256=before.file_sha256,source_unchanged=True,manual_event_times_used=False,
-            automatically_discovered_events=pr['automatically_discovered_events'],tonal_candidates=pr['tonal_same_f0_candidates'],accepted_additions=pr['accepted_additions'],fallback_accepted=pr['fallback_accepted'],
-            fallback_permission_path=accepted[0]['evidence']['source_decision']['permission_path'],fallback_source_f0_ratio=accepted[0]['evidence']['source_proof']['fundamental_to_upper_ratio'],
-            fallback_focus_upper_fraction=accepted[0]['evidence']['source_shape']['focus_upper_fraction'],observer_provider=pr['observer_provider'],observer_model_asset_sha256=pr['observer_identity']['model_asset_sha256'],
-            observer_runtime_manifest_sha256=pr['observer_identity']['runtime_manifest_sha256'],main_imported_tensorflow=False,main_imported_spleeter=False,stem_audio_in_master=False,old_note_sub_called=False,
-            relative_low=pr['relative_low'],lowend_assessment=report['lowend_assessment'],master_route=report['master']['auto_route'],wav_lufs=report['master_metrics']['lufs_i'],wav_tp=report['master_metrics']['true_peak_max_dbtp_estimate'],
-            mp3_lufs=report['codec_metrics']['lufs_i'],mp3_tp=report['codec_metrics']['true_peak_max_dbtp_estimate'],master_sha256=file_hash(folder/'MASTER.wav'),mp3_sha256=file_hash(folder/'LISTEN_320kbps.mp3'),
-            private_audio_used=False,subjective_quality='NOT_EVALUATED',product_release=False)
+            automatically_discovered_events=pr['automatically_discovered_events'],tonal_candidates=pr['tonal_same_f0_candidates'],accepted_additions=pr['accepted_additions'],v50_accepted=pr['v50_accepted'],fallback_accepted=pr['fallback_accepted'],
+            same_f0_permission_path=path,source_f0_ratio=accepted[0]['evidence']['source_proof']['fundamental_to_upper_ratio'],focus_upper_fraction=accepted[0]['evidence']['source_shape']['focus_upper_fraction'],
+            observer_provider=pr['observer_provider'],observer_model_asset_sha256=pr['observer_identity']['model_asset_sha256'],observer_runtime_manifest_sha256=pr['observer_identity']['runtime_manifest_sha256'],
+            main_imported_tensorflow=False,main_imported_spleeter=False,stem_audio_in_master=False,old_note_sub_called=False,relative_low=pr['relative_low'],lowend_assessment=report['lowend_assessment'],
+            master_route=report['master']['auto_route'],wav_lufs=report['master_metrics']['lufs_i'],wav_tp=report['master_metrics']['true_peak_max_dbtp_estimate'],mp3_lufs=report['codec_metrics']['lufs_i'],mp3_tp=report['codec_metrics']['true_peak_max_dbtp_estimate'],
+            master_sha256=file_hash(folder/'MASTER.wav'),mp3_sha256=file_hash(folder/'LISTEN_320kbps.mp3'),private_audio_used=False,subjective_quality='NOT_EVALUATED',product_release=False)
         (OUT/'SUMMARY.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8');print('P03A_RUNTIME '+json.dumps(evidence,ensure_ascii=True),flush=True)
     shutil.rmtree(ROOT/'P02_CAPSULE_WORK',ignore_errors=False)
     if (ROOT/'P02_CAPSULE_WORK').exists():raise RuntimeError('Large observer runtime retained after acceptance')

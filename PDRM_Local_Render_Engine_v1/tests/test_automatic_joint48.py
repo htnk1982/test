@@ -36,8 +36,10 @@ def audio(kind,sr=48000,seconds=7.):
     elif kind=='110':
         g=gate(t,2.0,4.0);low=g*(.08*np.sin(2*np.pi*110*t)+.035*np.sin(2*np.pi*220*t))
     elif kind=='reference':
+        # Strong low end is intentionally a positive reference. This keeps the
+        # weak-fundamental case distinct from the genuinely excessive 5x case.
         for a,d,f in ((.7,.35,55.),(1.7,.45,73.4),(3.0,.55,110.),(4.8,.30,55.)):
-            g=gate(t,a,a+d);low+=.03*g*(np.sin(2*np.pi*f*t)+.45*np.sin(4*np.pi*f*t)+.2*np.sin(6*np.pi*f*t))
+            g=gate(t,a,a+d);low+=.11*g*(np.sin(2*np.pi*f*t)+.45*np.sin(4*np.pi*f*t)+.2*np.sin(6*np.pi*f*t))
     else:raise ValueError(kind)
     return np.column_stack((y+low,.94*y+low))
 
@@ -90,7 +92,7 @@ class AutomaticJointContracts(unittest.TestCase):
     def planner(self,mode,override=None):return aj.AutomaticJointPlanner(self.bundle,FixtureObserver(mode,override),allow_fixture=True)
     def test_weak_present_fundamental_is_discovered_and_added(self):
         r,src,snap,ctx=self.case('weak');p=self.planner('weak');plan=p.build(ctx)
-        self.assertGreater(len(plan['additions']),0);self.assertFalse(p.last_report['manual_event_times_used']);self.assertGreater(p.last_report['automatically_discovered_events'],0)
+        self.assertGreater(len(plan['additions']),0,p.last_report);self.assertFalse(p.last_report['manual_event_times_used']);self.assertGreater(p.last_report['automatically_discovered_events'],0)
         self.assertTrue(any(x.get('planner_resolution')=='ADD_ACCEPTED' for x in p.last_report['addition_records']))
         joint.validate_plan(json.loads(json.dumps(plan)),snap)
     def test_kick_may_reduce_but_never_authorizes_bass_add(self):
@@ -101,17 +103,17 @@ class AutomaticJointContracts(unittest.TestCase):
         self.assertEqual(plan['additions'],[]);self.assertFalse(any(plan['reduction_plan']['broad_plan']['low_cut_db']))
     def test_rest_gap_has_no_addition_spanning_gap(self):
         r,src,snap,ctx=self.case('rest');p=self.planner('rest');plan=p.build(ctx)
-        self.assertGreaterEqual(len(plan['additions']),1);sr=snap.source.samplerate
+        self.assertGreaterEqual(len(plan['additions']),1,p.last_report);sr=snap.source.samplerate
         for a in plan['additions']:
             self.assertFalse(a['source_frames'][0]<3.5*sr<a['source_frames'][-1])
     def test_110hz_event_is_not_octave_mapped_to_55(self):
         r,src,snap,ctx=self.case('110');p=self.planner('110');plan=p.build(ctx)
-        self.assertEqual(plan['additions'],[]);self.assertEqual(p.last_report['tonal_same_f0_candidates'],0)
+        self.assertEqual(plan['additions'],[]);self.assertEqual(p.last_report['tonal_same_f0_candidates'],0,p.last_report)
     def test_reduction_priority_suppresses_conflicting_add(self):
         r,src,snap,ctx=self.case('heavyweak');p=self.planner('heavyweak');plan=p.build(ctx)
-        self.assertTrue(any(plan['reduction_plan']['broad_plan']['low_cut_db']))
+        self.assertTrue(any(plan['reduction_plan']['broad_plan']['low_cut_db']),p.last_report)
         self.assertEqual(plan['additions'],[])
-        self.assertTrue(any(x.get('planner_resolution')=='SUPPRESSED_SAME_FUNDAMENTAL_ADD;_BROAD_REDUCTION_PRIORITY' for x in p.last_report['addition_records']))
+        self.assertTrue(any(x.get('planner_resolution')=='SUPPRESSED_SAME_FUNDAMENTAL_ADD;_BROAD_REDUCTION_PRIORITY' for x in p.last_report['addition_records']),p.last_report)
     def test_fixture_identity_cannot_silently_claim_research(self):
         p=aj.AutomaticJointPlanner(self.bundle,FixtureObserver('weak',{'evidence_scope':'research_observer'}),allow_fixture=True)
         with self.assertRaises(ValueError):p.preflight()
@@ -127,7 +129,7 @@ class AutomaticJointContracts(unittest.TestCase):
         case=Path(tempfile.mkdtemp(dir=self.root));inputs=case/'inputs';inputs.mkdir();src=save(inputs/'weak.wav',audio('weak'));planner=self.planner('weak')
         report,folder=finish.run_lab(src,case/'work',planner,targets=Targets(),enable_lab=True,render_backend='joint-v46')
         self.assertEqual(report['sub_synthesis'],'SAME_FUNDAMENTAL_ONLY_CONNECTED');self.assertFalse(report['old_note_sub_called'])
-        self.assertGreaterEqual(report['lowend_report']['same_fundamental_additions'],1);self.assertTrue((folder/'MASTER.wav').is_file());self.assertTrue((folder/'LISTEN_320kbps.mp3').is_file())
+        self.assertGreaterEqual(report['lowend_report']['same_fundamental_additions'],1,report['planner_report']);self.assertTrue((folder/'MASTER.wav').is_file());self.assertTrue((folder/'LISTEN_320kbps.mp3').is_file())
         self.assertLessEqual(report['master_metrics']['true_peak_max_dbtp_estimate'],-2);self.assertLessEqual(report['codec_metrics']['true_peak_max_dbtp_estimate'],-2)
 
 if __name__=='__main__':unittest.main(verbosity=2)

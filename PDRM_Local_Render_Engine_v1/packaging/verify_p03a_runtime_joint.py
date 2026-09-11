@@ -10,8 +10,7 @@ import soundfile as sf
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-import automatic_lowend_v41 as broad41
-import automatic_joint_v48 as planner48
+import automatic_joint_v49 as planner49
 from spleeter_observer_adapter_v48 import SpleeterRuntimeObserver
 import integrated_finish_v40 as finish
 from integration_contract_v40 import capture,file_hash
@@ -48,15 +47,15 @@ def main():
         root=Path(td);refs=root/'refs';inputs=root/'inputs';refs.mkdir();inputs.mkdir();specs=[]
         for i in range(4):
             p=refs/f'ref{i}.wav';sf.write(p,reference(phase=.19*i,level=.105+.004*i),48000,subtype='DOUBLE');specs.append(dict(path=p,role='bass',quality='positive'))
-        bundle=broad41.make_calibration(specs);source=inputs/'自動判断 弱い基音.wav';sf.write(source,weak_song(),48000,subtype='DOUBLE');before=capture(source)
-        observer=SpleeterRuntimeObserver(CAPSULE,work_root=root/'observer-ipc',timeout=300);planner=planner48.AutomaticJointPlanner(bundle,observer)
+        bundle=planner49.make_calibration(specs);source=inputs/'自動判断 弱い基音.wav';sf.write(source,weak_song(),48000,subtype='DOUBLE');before=capture(source)
+        observer=SpleeterRuntimeObserver(CAPSULE,work_root=root/'observer-ipc',timeout=300);planner=planner49.AutomaticJointPlanner(bundle,observer)
         report,folder=finish.run_lab(source,root/'work',planner,targets=Targets(),enable_lab=True,render_backend='joint-v46')
         if capture(source)!=before:raise RuntimeError('Original source changed')
         if 'tensorflow' in sys.modules or 'spleeter' in sys.modules:raise RuntimeError('TensorFlow/Spleeter leaked into main process')
         pr=report['planner_report'];low=report['lowend_report']
         if pr['manual_event_times_used'] is not False or pr['observer_provider']!='spleeter_runtime48':raise RuntimeError('Automatic/runtime provenance failed')
         if pr['automatically_discovered_events']<1 or pr['tonal_same_f0_candidates']<1:raise RuntimeError('Source-driven event/pitch discovery failed: '+json.dumps(pr['source_same_f0_refinements']))
-        if pr['accepted_additions']<1 or low['same_fundamental_additions']<1:raise RuntimeError('Real observer did not drive same-fundamental repair: '+json.dumps(pr['addition_records']))
+        if pr['accepted_additions']<1 or low['same_fundamental_additions']<1:raise RuntimeError('Real observer did not drive same-fundamental repair: '+json.dumps(dict(addition_records=pr['addition_records'],relative_low=pr['relative_low'],suppressed=pr['suppressed_addition_ids'])))
         if report['old_note_sub_called'] is not False or report['sub_synthesis']!='SAME_FUNDAMENTAL_ONLY_CONNECTED':raise RuntimeError('Legacy/wrong sub path used')
         if not (folder/'MASTER.wav').is_file() or not (folder/'LISTEN_320kbps.mp3').is_file():raise RuntimeError('Final outputs missing')
         if report['master_metrics']['true_peak_max_dbtp_estimate']>-2 or report['codec_metrics']['true_peak_max_dbtp_estimate']>-2:raise RuntimeError('Final TP target failed')
@@ -64,7 +63,7 @@ def main():
         evidence=dict(success=True,task='P03-A-real-observer-full-chain',platform=platform.platform(),main_python=sys.version,source_sha256=before.file_sha256,source_unchanged=True,manual_event_times_used=False,
             automatically_discovered_events=pr['automatically_discovered_events'],tonal_candidates=pr['tonal_same_f0_candidates'],accepted_additions=pr['accepted_additions'],observer_provider=pr['observer_provider'],
             observer_model_asset_sha256=pr['observer_identity']['model_asset_sha256'],observer_runtime_manifest_sha256=pr['observer_identity']['runtime_manifest_sha256'],main_imported_tensorflow=False,main_imported_spleeter=False,
-            stem_audio_in_master=False,old_note_sub_called=False,lowend_assessment=report['lowend_assessment'],master_route=report['master']['auto_route'],wav_lufs=report['master_metrics']['lufs_i'],wav_tp=report['master_metrics']['true_peak_max_dbtp_estimate'],
+            stem_audio_in_master=False,old_note_sub_called=False,relative_low=pr['relative_low'],lowend_assessment=report['lowend_assessment'],master_route=report['master']['auto_route'],wav_lufs=report['master_metrics']['lufs_i'],wav_tp=report['master_metrics']['true_peak_max_dbtp_estimate'],
             mp3_lufs=report['codec_metrics']['lufs_i'],mp3_tp=report['codec_metrics']['true_peak_max_dbtp_estimate'],master_sha256=file_hash(folder/'MASTER.wav'),mp3_sha256=file_hash(folder/'LISTEN_320kbps.mp3'),private_audio_used=False,subjective_quality='NOT_EVALUATED',product_release=False)
         (OUT/'SUMMARY.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8');print('P03A_RUNTIME '+json.dumps(evidence,ensure_ascii=True),flush=True)
     shutil.rmtree(ROOT/'P02_CAPSULE_WORK',ignore_errors=False)

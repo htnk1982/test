@@ -1,20 +1,18 @@
-"""Synthetic contracts for automatic_joint_v48; no private audio.
+"""Synthetic contracts for automatic_joint_v49; no private audio.
 
 Fixture observer roles are explicit test evidence only. Event times, pitch and
-broad repair spans are discovered by production source/physical analysis code;
-no event timestamp is passed to the planner.
+repair spans are discovered by production source/physical analysis code; no
+event timestamp is passed to the planner.
 """
 from pathlib import Path
-import copy,tempfile,unittest,json
+import tempfile,unittest,json
 import numpy as np
 import soundfile as sf
-import automatic_joint_v48 as aj
-import automatic_lowend_v41 as broad41
+import automatic_joint_v49 as aj
 import joint_lowend_v46 as joint
-import source_events_v41 as events
 import integrated_finish_v40 as finish
 from integrated_finish_v40 import PlanningContext
-from integration_contract_v40 import capture,RenderSnapshot,digest
+from integration_contract_v40 import capture,RenderSnapshot
 from target_settings import Targets
 
 
@@ -36,8 +34,8 @@ def audio(kind,sr=48000,seconds=7.):
     elif kind=='110':
         g=gate(t,2.0,4.0);low=g*(.08*np.sin(2*np.pi*110*t)+.035*np.sin(2*np.pi*220*t))
     elif kind=='reference':
-        # Strong low end is intentionally a positive reference. This keeps the
-        # weak-fundamental case distinct from the genuinely excessive 5x case.
+        # Strong low end is intentionally positive. Duration alone is not used
+        # as a defect label; v49 calibrates low-vs-mid dominance.
         for a,d,f in ((.7,.35,55.),(1.7,.45,73.4),(3.0,.55,110.),(4.8,.30,55.)):
             g=gate(t,a,a+d);low+=.11*g*(np.sin(2*np.pi*f*t)+.45*np.sin(4*np.pi*f*t)+.2*np.sin(6*np.pi*f*t))
     else:raise ValueError(kind)
@@ -76,9 +74,8 @@ class FixtureObserver:
 def calibration(root):
     specs=[]
     for i in range(4):
-        x=audio('reference');x[:,0]*=(1+i*.003);p=save(root/f'ref{i}.wav',x)
-        specs.append(dict(path=p,role='bass',quality='positive'))
-    return broad41.make_calibration(specs)
+        x=audio('reference');x[:,0]*=(1+i*.003);p=save(root/f'ref{i}.wav',x);specs.append(dict(path=p,role='bass',quality='positive'))
+    return aj.make_calibration(specs)
 
 
 class AutomaticJointContracts(unittest.TestCase):
@@ -93,27 +90,23 @@ class AutomaticJointContracts(unittest.TestCase):
     def test_weak_present_fundamental_is_discovered_and_added(self):
         r,src,snap,ctx=self.case('weak');p=self.planner('weak');plan=p.build(ctx)
         self.assertGreater(len(plan['additions']),0,p.last_report);self.assertFalse(p.last_report['manual_event_times_used']);self.assertGreater(p.last_report['automatically_discovered_events'],0)
-        self.assertTrue(any(x.get('planner_resolution')=='ADD_ACCEPTED' for x in p.last_report['addition_records']))
-        joint.validate_plan(json.loads(json.dumps(plan)),snap)
+        self.assertEqual(p.last_report['suppressed_addition_ids'],[]);joint.validate_plan(json.loads(json.dumps(plan)),snap)
     def test_kick_may_reduce_but_never_authorizes_bass_add(self):
-        r,src,snap,ctx=self.case('kick');p=self.planner('kick');plan=p.build(ctx)
-        self.assertEqual(plan['additions'],[]);self.assertFalse(any(x.get('planner_resolution')=='ADD_ACCEPTED' for x in p.last_report['addition_records']))
+        r,src,snap,ctx=self.case('kick');p=self.planner('kick');plan=p.build(ctx);self.assertEqual(plan['additions'],[])
     def test_vocal_like_low_is_not_bass_action(self):
         r,src,snap,ctx=self.case('vocal');p=self.planner('vocal');plan=p.build(ctx)
-        self.assertEqual(plan['additions'],[]);self.assertFalse(any(plan['reduction_plan']['broad_plan']['low_cut_db']))
+        self.assertEqual(plan['additions'],[]);self.assertFalse(any(plan['reduction_plan']['broad_plan']['low_cut_db']),p.last_report)
     def test_rest_gap_has_no_addition_spanning_gap(self):
         r,src,snap,ctx=self.case('rest');p=self.planner('rest');plan=p.build(ctx)
         self.assertGreaterEqual(len(plan['additions']),1,p.last_report);sr=snap.source.samplerate
-        for a in plan['additions']:
-            self.assertFalse(a['source_frames'][0]<3.5*sr<a['source_frames'][-1])
+        for a in plan['additions']:self.assertFalse(a['source_frames'][0]<3.5*sr<a['source_frames'][-1])
     def test_110hz_event_is_not_octave_mapped_to_55(self):
         r,src,snap,ctx=self.case('110');p=self.planner('110');plan=p.build(ctx)
         self.assertEqual(plan['additions'],[]);self.assertEqual(p.last_report['tonal_same_f0_candidates'],0,p.last_report)
     def test_reduction_priority_suppresses_conflicting_add(self):
         r,src,snap,ctx=self.case('heavyweak');p=self.planner('heavyweak');plan=p.build(ctx)
-        self.assertTrue(any(plan['reduction_plan']['broad_plan']['low_cut_db']),p.last_report)
-        self.assertEqual(plan['additions'],[])
-        self.assertTrue(any(x.get('planner_resolution')=='SUPPRESSED_SAME_FUNDAMENTAL_ADD;_BROAD_REDUCTION_PRIORITY' for x in p.last_report['addition_records']),p.last_report)
+        self.assertTrue(any(plan['reduction_plan']['broad_plan']['low_cut_db']),p.last_report);self.assertEqual(plan['additions'],[])
+        self.assertGreater(len(p.last_report['suppressed_addition_ids']),0,p.last_report)
     def test_fixture_identity_cannot_silently_claim_research(self):
         p=aj.AutomaticJointPlanner(self.bundle,FixtureObserver('weak',{'evidence_scope':'research_observer'}),allow_fixture=True)
         with self.assertRaises(ValueError):p.preflight()
@@ -121,10 +114,10 @@ class AutomaticJointContracts(unittest.TestCase):
         p=aj.AutomaticJointPlanner(self.bundle,FixtureObserver('weak',{'provider':'unknown'}),allow_fixture=True)
         with self.assertRaises(ValueError):p.preflight()
     def test_original_never_mutated_and_old_note_sub_absent(self):
-        r,src,snap,ctx=self.case('weak');old=capture(src);p=self.planner('weak');plan=p.build(ctx)
+        r,src,snap,ctx=self.case('weak');old=capture(src);p=self.planner('weak');p.build(ctx)
         self.assertEqual(capture(src),old);self.assertFalse(p.last_report['old_note_sub_called']);self.assertEqual(p.last_report['sub_synthesis'],'SAME_FUNDAMENTAL_ONLY_CONNECTED')
     def test_candidate_temporaries_are_removed(self):
-        r,src,snap,ctx=self.case('heavyweak');self.planner('heavyweak').build(ctx);self.assertFalse(list(r.glob('plan48_*')))
+        r,src,snap,ctx=self.case('heavyweak');self.planner('heavyweak').build(ctx);self.assertFalse(list(r.glob('plan48_*')));self.assertFalse(list(r.glob('relative49_*')))
     def test_complete_existing_chain_reaches_wav_and_mp3(self):
         case=Path(tempfile.mkdtemp(dir=self.root));inputs=case/'inputs';inputs.mkdir();src=save(inputs/'weak.wav',audio('weak'));planner=self.planner('weak')
         report,folder=finish.run_lab(src,case/'work',planner,targets=Targets(),enable_lab=True,render_backend='joint-v46')

@@ -1,82 +1,64 @@
 # PDRM 更新EXE：課題台帳・進捗の正本
 
-更新：2026-09-11 / revision 3
+更新：2026-09-12 / revision 4
 repo：`htnk1982/test` / branch：`pdrm-note-sub-lab-v1`
 親Issue：#2。
 
 ## 現在地
 
-**運用基盤P07は完了、GUI基盤P06-Aは完了、同一基音の技術接続P04-Aは完了。出荷の主戦場はP02/P03/P05/P08へ移った。P01の私有実曲実行環境は引き続きBLOCKED。**
+**P02をDONE。次の主タスクはP03「実曲の発音・役割・適用量の自動判断」。**
+運用系P06-A/P07、同一基音の物理処理接続P04-Aも完了済み。残る製品中核はP01/P03/P05/P08で、P01の私有実曲環境が復旧し次第、実曲校正を最優先する。
 
-管理資料・試験件数そのものを進捗に数えない。下表の受入条件を閉じたものだけDONEとする。
+| ID | 状態 | 残ること |
+|---|---|---|
+| P01 私有実音源・レビュー実行基盤 | **BLOCKED #3** | ローカル実行環境の復旧→既存音源manifest→実曲1件 |
+| P02 配布用observer | **DONE #8** | 製品EXEへの配置と容量最適化はP08。私有音源での音楽校正はP03/P05 |
+| P03 発音・役割・必要量の自動判断 | **IN PROGRESS** | SpleeterRuntimeObserverをsource-driven plannerへ接続し、手入力時刻なしで加算/減算を決める |
+| P04 加算・広域/狭帯域統合 | **PARTIAL：P04-A DONE #9** | P03の自動判断との接続後に親を閉じる |
+| P05 完成WAV/MP3での候補選択・実曲回帰 | WAITING | P01/P03後。OPPO/limiter経路変化込みで判定 |
+| P06 GUI/進捗/キャンセル | **P06-A DONE #6** | product-release runtimeの解禁はP03/P08 |
+| P07 保存・退避・復旧・多曲/掃除 | **DONE** | A #4 / B #5 / C #7 完了 |
+| P08 製品Windows EXEと最終受入 | WAITING | 実モデルruntime配置、容量圧縮、実曲、GUI、保存を版/hash固定EXEで完走 |
 
-| ID | 出荷に必要な成果 | 状態 | 実行根拠 / 次の一点 |
-|---|---|---|---|
-| **P01** | 私有実音源・レビューを非公開環境で新経路に通す | **BLOCKED / #3** | ローカルPython/containerのTransportTimeout。復旧時に既存素材manifest→実曲1件を最優先 |
-| **P02** | 配布条件の明確な解析observer＋Windows実推論 | **IN PROGRESS / #8** | Spleeter公式v1.4.0 4stemsを候補化。Ubuntu公式asset推論成功。Windows依存差を明示して実推論を再試験中 |
-| **P03** | 実曲の発音・役割・関連成分・必要量の自動判断 | **PARTIAL / P01待ち** | 合成/参照設計は実装済み。実曲の好例保存・負例修復が未受入 |
-| **P04** | 加算・広域・狭帯域を共同判断・共同量管理で実行 | **PARTIAL** | **P04-A #9 DONE**：同一基音のみをjoint-v46へ接続、377件両OS成功。残りはP03の自動role/eventからこの経路へつなぐこと |
-| **P05** | 最終OPPO/limiter・MP3後にも利益が残る候補選択と実曲回帰 | **PARTIAL / P01待ち** | 完成チェーン相互作用は合成音で確認。実曲の完成音比較は未完 |
-| **P06** | GUI設定・進捗・キャンセルで新workerを運用 | **PARTIAL：P06-A DONE / #6** | Windows frozen GUI→別worker→完走/処理中cancel成功。product_release runtimeはP02/P03/P04の受入まで閉鎖 |
-| **P07** | 同名保存・退避・復旧・掃除・多曲連続処理 | **DONE** | P07-A #4 / P07-B #5 / P07-C #7 全てDONE。Windows/Ubuntu実行根拠あり |
-| **P08** | 更新Windows EXEを実モデル・実曲・GUI・保存まで通し最終受入 | **WAITING** | P02/P03/P04/P05を閉じた後にproduct_releaseを開け、版/hash固定で最終受入 |
+## P02を閉じた根拠
 
-## 今回までに閉じた主要課題
+### 公式asset・Windows実推論
+Deezer Spleeter v1.4.0 `4stems.tar.gz`を公式checksumで固定。asset SHA256 `3adb4a50ad4eb18c7c4d65fcf4cf2367a07d48408a5eb7d03cd20067429dfaa8`。Windows Server 2022 / Ubuntuで44.1kHz `vocals/drums/bass/other`のローカル推論に成功。
 
-### P07 DONE — 運用基盤
-- P07-A #4：`processed`同名WAV/MP3、設定変更時backup、通常中断再実行、曲単位cleanup。
-- P07-B #5：PID/create-time/source/request seal付き所有manifest、実process kill後のstale回収、容量不足preflight。
-- P07-C #7：WAV/FLAC同stem衝突の開始前拒否、複数folder/多曲、失敗曲を記録して継続、再実行skip、終了時大容量残留0。
+### Python/TensorFlowを利用者に要求しない隔離runtime
+主PDRM Python3.12/Numpy2系から、内蔵CPython3.11.9 + Spleeter2.4.2 + TensorFlow2.12.1を別processで起動。日本語/空白pathから2回連続推論し、`sys.executable`/`sys.prefix`が同梱runtime内であること、元音源hash不変、stem WAV非保存、完成音へstem非混入、曲処理時model download禁止、一時IPC清掃を確認。
 
-P07-C最終CI `34491438266`、Windows/Ubuntu success。P07-B最終CI `34489650678`、Windows/Ubuntu success。
+runtime manifest SHA256 `f97c83aa0619b5c315d1ae54b13fa300e7e35043dd241a1e67a8108060d3d874`。CI run `34622532092` / Windows job `103339719885` success。証拠artifact ID `10273107830`、ZIP SHA256 `ff5d9566adb8f1c8aa7ee7743cc54211772a6c403dec4bff181e28be9e393c4a`。runtime本体/model重みはartifactへ保存していない。
 
-### P06-A DONE — GUI/worker基盤
-Issue #6。既存4目標とreplace-managed UIを維持し、Tk main threadから別workerへDSPを分離。status IPC・cancel・一曲失敗後の継続を実装。
+未圧縮runtimeは1,925,110,546 bytes / 24,767 files。これは最終配布には大きいためP08で依存削減/配布圧縮を行う。ただし、hostへのPython/TensorFlow導入不要・offline local推論というP02の機能条件は満たした。
 
-Windows frozen GUI最終run `34492251802`、job `102921677167` success。途中でWindowsのstatus.json readと`os.replace()`競合によるAccess Deniedを実バグとして検出し、PermissionErrorだけを有限retryして解消。Tk自己試験の時間待ち・CP1252診断出力も修正。
+### PDRM用途のrole safety比較
+初回比較は低い歌声fixtureを正しく`vocals` stemへ分類できることを要求し、Spleeter/HDEMUCSとも失敗した。この条件はPDRMの操作許可と一致しないため、その失敗を消さず、2回目は既存PDRMの実permission gateそのものを使用した。
 
-**product_release runtimeは未承認のため閉鎖中。** GUI基盤DONEを更新EXE出荷DONEへ読み替えない。
+最終比較CI run `34623196785` / job `103341899355` success。生成counterexample 4種：
+- bass_event：低域減算を許可し、同一基音55Hz補強も許可
+- kick_only：drum由来低域減算は許可するが、bass同一基音補強は拒否
+- vocal_low：低域減算・counterfactual 55Hz補強を拒否、165→55Hz octave-downも拒否
+- rest_gap：左右のbass eventを許可し、中央休符の低域操作許可0
 
-### P04-A DONE — 同一基音補強の技術接続
-Issue #9。`joint-v46`で、原音observerのrole/pitch/event支持とHE/AUTO後の実音声の不足を双方要求し、同一基音のみを補強する。
+Spleeter 4/4、HDEMUCS research baseline 3/4。vocal_lowでHDEMUCSはbassとして広域減算を1.0許可しcounterfactual 55Hz補強も許可した一方、Spleeterは対象を主に`other`へ割当て、PDRMの広域減算許可0、同一基音補強も拒否した。これは一般的source-separation優越性や私有実曲精度の証明ではなく、PDRMの操作安全counterexampleに対する結果。
 
-- 110→55Hzなど新octaveは禁止。
-- 既に十分、誤音程、休符/不確実区間は無加算。
-- 広域low-cutと同時の加算は自己相殺として拒否。
-- 重なる加算はplanner解決なしに足し上げない。
-- stem samplesは成果物に混ぜない。
-- HFTC→最終AUTO→WAV/MP3まで接続。
+比較artifact ID `10272729312`、SHA256 `571e3a7b36c8c4997132bf0f951a24e471db5b47a96a1c5e37f912744cc5bc40`。HDEMUCS checkpointはCI終了前に削除し配布物へ含めていない。
 
-最終commit `d26ac2c4390b20cb21e7667bf3f191075bee2520`、CI `34602396977`、Windows/Ubuntuで377件すべて成功。
+## 次の主タスク P03
 
-## 現在実行中：P02
+1. `SpleeterRuntimeObserver`のsealed feature契約をsource-driven plannerへ接続。
+2. 元2mixからイベントを自動発見し、observer windowを自動配置。手入力時刻を製品判断へ残さない。
+3. 広域low/lowmid減算とP04-Aのsame-fundamental補強を同じplannerで選択し、同時刻の自己相殺を拒否。
+4. kick/vocal/rest/weak-fundamental/overweight-lowを合成counterexampleで回帰。
+5. P01復旧後、既存08/11/12・reference/before/after・レビューへ同じplannerを適用し、私有実曲で量を校正。
 
-候補はDeezer Spleeter公式v1.4.0の`4stems.tar.gz`。公式release assetをchecksum付きで取得する。著者論文はソースコードとpretrained modelsのMIT配布を明記。4stems設定は44.1kHz、`vocals/drums/bass/other`。
+P03の合成試験成功だけで本人の音楽的適合をDONEにしない。逆にP01不通を理由に、接続可能な自動判断コードまで止めない。
 
-Spleeter 2.4.2のPython依存は現PDRMのPython3.12/Numpy2系と競合するため、同一processへ混ぜず隔離worker/runtimeを前提にする。
+## 完了を偽らない運転規則
 
-Windowsではpackage metadataが`tensorflow-io-gcs-filesystem==0.32.0`を固定する一方、0.32.0 Windows wheelが存在しない。TensorFlow 2.12.1は利用可能な0.31.0を導入する。既知のこの差だけを記録し、その他の依存不整合はfatal、**実際の公式4stemsローカル推論を合否条件**として再試験中。
-
-Spleeterを採用確定する条件は、ライセンスだけでなく、bass/rest/vocal protection/role evidenceで現在の観測契約に足ること、Windowsで利用者にPython/TensorFlow手動導入を要求しないこと。単なるSDRや一回の合成推論ではP02を閉じない。
-
-## ゴールへ進む順序
-
-主経路：**P02 → P03 → P04残件 → P05 → P08**。
-P01が復旧した瞬間は、運用改修より**P03/P05の私有実曲検証を最優先**する。
-
-P06/P07はこれ以上の研究対象にしない。製品化で新しい実バグが出た場合だけ再開する。
-
-## 停止条件
-
-会話1往復の開発は、以下のいずれかで必ず区切って返答する。
-1. 課題IDをDONEへ閉じた。
-2. 実バグを特定し、修正中または再現条件まで確定した。
-3. 外部阻害要因で止まり、回避してはいけない理由と次の独立作業が確定した。
-
-「さらに検証できる」「説明を追加できる」だけではツール実行を継続しない。
-
-## 機密・評価境界
-
-個人音源・レビュー・実参照atlasを公開GitHub/CIへ送らない。合成音やpublic modelのCI結果を本人作品の音質合格へ昇格しない。空欄レビューをpositive labelへ変えない。KEEPとABSTAINを分ける。
-
-中高域のHE/HFTCは現行の良い線を維持し、低域統合を理由に大改造しない。最終合否はユーザーの聴感だが、設計・機械・実曲回帰を先にできるだけ閉じ、ユーザーへ当てずっぽうのA/B反復を転嫁しない。
+- 1入力に対し有限バッチを実行し、DONE / concrete failure / external blockerのいずれかで必ず回答を閉じる。
+- 管理資料、試験件数、コード量を進捗率にしない。
+- 既存HE/HFTC/OPPOを不用意に大改造しない。
+- 私有音源を公開GitHub/CIへ送ってP01を迂回しない。
+- 新しい判断器は、どの既存課題を閉じるかを明示してから実装する。

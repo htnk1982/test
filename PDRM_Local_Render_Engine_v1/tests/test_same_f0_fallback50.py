@@ -27,7 +27,10 @@ def audio(kind,sr=48000,seconds=7.):
 def observer(source_digest,kind='weak'):
     t=1.8+np.arange(350)*.01;n=len(t);p=np.full((2,n,5),1e-9);p[:,:,0]=.03;f=np.full((2,n),55.);q=np.full((2,n),.99)
     if kind=='weak':
-        p[0,:,2]=.025;p[0,:,3]=.002;p[1,:,2]=.002;p[1,:,3]=.025
+        # Reproduce deployable-observer ambiguity: moderate drum leakage and a
+        # bass/other swap between contexts. No single semantic stem is stable.
+        p[:,:,1]=.012
+        p[0,:,2]=.022;p[0,:,3]=.005;p[1,:,2]=.005;p[1,:,3]=.022
     elif kind=='voice':
         p[:,:,2]=.027;p[:,:,3]=.0002
     elif kind=='kick':
@@ -46,8 +49,10 @@ class SameF0Fallback(unittest.TestCase):
     def evidence(self,kind,pitch=55):
         p=self.write(kind);proof=v48._present_fundamental(p,source_event(pitch));shape=bridge.source_shape(p,2.15,5.0);arr,meta=observer(capture(p).file_sha256,'kick' if kind=='kick' else ('voice' if kind=='voice' else 'weak'));return p,proof,shape,arr,meta
     def test_weak_existing_f0_rescues_only_local_role_ambiguity(self):
-        p,proof,shape,arr,meta=self.evidence('weak');d=permission.permit(event(),arr,meta,capture(p).file_sha256,proof,shape)
-        self.assertTrue(d['allowed'],d);self.assertEqual(d['permission_path'],'EXISTING_WEAK_F0_FALLBACK');self.assertEqual(d['envelope_role_indices'],[2,3])
+        p,proof,shape,arr,meta=self.evidence('weak');source_sha=capture(p).file_sha256
+        old=legacy.permit(event(),arr,meta,source_sha);self.assertFalse(old['allowed'],old);self.assertEqual(old['reason_codes'],['ABSTAIN_LOCAL_ROLE_OR_PITCH'])
+        d=permission.permit(event(),arr,meta,source_sha,proof,shape)
+        self.assertTrue(d['allowed'],d);self.assertEqual(d['permission_path'],'EXISTING_WEAK_F0_FALLBACK');self.assertEqual(d['envelope_role_indices'],[2,3]);self.assertLess(d['fallback_drum_share_q80'],.5)
     def test_deep_voice_legacy_allow_is_overridden_by_source_veto(self):
         p,proof,shape,arr,meta=self.evidence('voice');source_sha=capture(p).file_sha256
         old=legacy.permit(event(),arr,meta,source_sha);self.assertTrue(old['allowed'],old)

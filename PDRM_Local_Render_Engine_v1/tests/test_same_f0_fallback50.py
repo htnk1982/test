@@ -25,10 +25,13 @@ def audio(kind,sr=48000,seconds=7.):
 
 def observer(source_digest,kind='weak'):
     t=1.8+np.arange(350)*.01;n=len(t);p=np.full((2,n,5),1e-9);p[:,:,0]=.03;f=np.full((2,n),55.);q=np.full((2,n),.99)
-    if kind in ('weak','voice'):
-        # Deliberate semantic/context swap between bass and other near all frames:
-        # legacy bass-only gate abstains, grouped bass+other remains stable.
+    if kind=='weak':
+        # semantic/context swap: legacy bass-only gate abstains, grouped evidence stable
         p[0,:,2]=.025;p[0,:,3]=.002;p[1,:,2]=.002;p[1,:,3]=.025
+    elif kind=='voice':
+        # More dangerous counterexample: separator confidently labels deep voice as bass.
+        # The legacy strict gate therefore ALLOWS; v50 source-shape veto must stop it.
+        p[:,:,2]=.027;p[:,:,3]=.0002
     elif kind=='kick':
         p[:,:,1]=.027;p[:,:,2]=.0002;p[:,:,3]=.0002;f[:]=0;q[:]=0
     meta=dict(version='role-observer-0.2.0',source_sha256=source_digest,source_order=['mix','drums','bass','other','vocals'],start_seconds=1.8,end_seconds=5.3)
@@ -38,8 +41,7 @@ def event(f0=55,target=55):return dict(start=2.15,end=5.0,source_f0_hz=float(f0)
 def source_event(pitch=55):return dict(start_frame=round(2.15*48000),stop_frame=round(5*48000),start_seconds=2.15,end_seconds=5.0,pitch_status='PERIODIC_CANDIDATE',pitch_hz=float(pitch))
 
 class SameF0Fallback(unittest.TestCase):
-    def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
+    def setUp(self):self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
     def tearDown(self):self.tmp.cleanup()
     def write(self,kind):
         p=self.root/(kind+'.wav');sf.write(p,audio(kind),48000,subtype='DOUBLE');return p
@@ -48,9 +50,10 @@ class SameF0Fallback(unittest.TestCase):
     def test_weak_existing_f0_rescues_only_local_role_ambiguity(self):
         p,proof,shape,arr,meta=self.evidence('weak');d=permission.permit(event(),arr,meta,capture(p).file_sha256,proof,shape)
         self.assertTrue(d['allowed'],d);self.assertEqual(d['permission_path'],'EXISTING_WEAK_F0_FALLBACK');self.assertEqual(d['envelope_role_indices'],[2,3])
-    def test_deep_voice_denied_by_source_shape_and_weakness_veto(self):
+    def test_deep_voice_legacy_allow_is_overridden_by_source_veto(self):
         p,proof,shape,arr,meta=self.evidence('voice');d=permission.permit(event(),arr,meta,capture(p).file_sha256,proof,shape)
-        self.assertFalse(d['allowed']);self.assertTrue(any(x in d['reason_codes'] for x in ('ABSTAIN_F0_NOT_WEAK_ENOUGH_FOR_FALLBACK','ABSTAIN_SOURCE_TOO_HARMONICALLY_BRIGHT_FOR_SUB_FALLBACK')),d)
+        self.assertFalse(d['allowed'],d);self.assertEqual(d['permission_path'],'STRICT_ROLE_SOURCE_VETO')
+        self.assertTrue(any(x in d['reason_codes'] for x in ('ABSTAIN_F0_NOT_WEAK_ENOUGH_FOR_REPAIR','ABSTAIN_SOURCE_TOO_HARMONICALLY_BRIGHT_FOR_SUB_REPAIR')),d)
     def test_kick_denied_by_drum_pitch_veto(self):
         p,proof,shape,arr,meta=self.evidence('kick',58);proof=proof or dict(method='ORIGINAL_COMPONENT_PRESENT;_HARMONIC_SUPPORTED;_NO_MISSING_FUNDAMENTAL',fundamental_to_upper_ratio=.05)
         d=permission.permit(event(58,58),arr,meta,capture(p).file_sha256,proof,shape);self.assertFalse(d['allowed']);self.assertIn('ABSTAIN_FALLBACK_ROLE_OR_PITCH',d['reason_codes'])

@@ -1,0 +1,49 @@
+name: PDRM P03-A Same-F0 Role Diagnostic
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/packaging/diagnose_same_f0_role_v50.py'
+      - '.github/workflows/pdrm-p03a-role-diagnostic.yml'
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      PYTHONUTF8: '1'
+      TF_CPP_MIN_LOG_LEVEL: '2'
+      OMP_NUM_THREADS: '2'
+    steps:
+      - name: Preserve source bytes
+        working-directory: .
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Builder Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build isolated Spleeter runtime
+        run: python packaging/build_spleeter_capsule_v47.py
+      - name: Main Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install main diagnostic dependencies only
+        run: python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1 pyloudnorm==0.2.0 imageio-ffmpeg==0.6.0 psutil==7.0.0
+      - name: Observe generated weak-bass, kick and deep-voice counterexamples
+        run: python packaging/diagnose_same_f0_role_v50.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-P03A-samef0-role-diagnostic
+          path: PDRM_Local_Render_Engine_v1/P03A_ROLE_DIAGNOSTIC
+          if-no-files-found: warn
+          retention-days: 30

@@ -23,8 +23,6 @@ def fixture(kind,sr=48000,seconds=8.):
     elif kind=='kick':
         p=(t-.08)%0.5;x=.20*np.sin(2*np.pi*58*t)*np.exp(-38*p)
     elif kind=='deep_voice55':
-        # A conservative false-positive challenge: 55-Hz voiced source with
-        # pronounced upper harmonics and slow formant-like amplitude modulation.
         amps=(.018,.052,.047,.038,.030,.025,.020,.016)
         x=g*sum(a*np.sin(2*np.pi*55*(i+1)*t+.17*i) for i,a in enumerate(amps))*(1+.22*np.sin(2*np.pi*4.6*t))
     else:raise ValueError(kind)
@@ -39,21 +37,22 @@ def shares(arr,key,mask):
 def source_spectral(path,a=2.15,b=5.0):
     with sf.SoundFile(path) as f:
         sr=f.samplerate;f.seek(round(a*sr));x=f.read(round((b-a)*sr),dtype='float64',always_2d=True)
-    mono=x[:,np.argmax(np.mean(x*x,axis=0))];mono-=mono.mean();t=np.arange(len(mono))/sr;w=np.hanning(len(mono));vals={}
+    mono=x[:,np.argmax(np.mean(x*x,axis=0))];mono-=mono.mean();w=np.hanning(len(mono));freqs=np.fft.rfftfreq(len(mono),1/sr);z=np.fft.rfft(mono*w);vals={}
     for lo,hi,name in ((25,120,'low'),(120,300,'body'),(300,450,'focus'),(450,700,'upper_focus')):
-        freqs=np.fft.rfftfreq(len(mono),1/sr);z=np.fft.rfft(mono*w);sel=(freqs>=lo)&(freqs<hi);vals[name]=float(np.sum(abs(z[sel])**2))
+        sel=(freqs>=lo)&(freqs<hi);vals[name]=float(np.sum(abs(z[sel])**2))
     total=max(sum(vals.values()),1e-24);vals['low_body_fraction']=float((vals['low']+vals['body'])/total);vals['focus_upper_fraction']=float((vals['focus']+vals['upper_focus'])/total);return vals
 
 def main():
     if sys.platform!='win32':raise RuntimeError('Windows diagnostic required')
     OUT.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='pdrm_role_diag_') as td:
-        root=Path(td);obs=SpleeterRuntimeObserver(CAPSULE,work_root=root/'ipc',timeout=300);records={}
+        root=Path(td);inputs=root/'inputs';inputs.mkdir();work=root/'observer_work';work.mkdir();obs=SpleeterRuntimeObserver(CAPSULE,work_root=work,timeout=300);records={}
         for kind in ('weak_bass','kick','deep_voice55'):
-            p=root/(kind+'.wav');sf.write(p,fixture(kind),48000,subtype='DOUBLE');ident=capture(p);arr,meta=obs.observe(p,2.0,6.0);t=np.asarray(arr['time']);mask=(t>=2.25)&(t<4.9)
+            p=inputs/(kind+'.wav');sf.write(p,fixture(kind),48000,subtype='DOUBLE');ident=capture(p);arr,meta=obs.observe(p,2.0,6.0);t=np.asarray(arr['time']);mask=(t>=2.25)&(t<4.9)
             proof=v48._present_fundamental(p,dict(start_frame=round(2.15*48000),stop_frame=round(5.0*48000),start_seconds=2.15,end_seconds=5.0,pitch_status='PERIODIC_CANDIDATE',pitch_hz=55.0))
-            records[kind]=dict(low_body_shares=shares(arr,'low_power',mask),body_shares=shares(arr,'body_power',mask),focus_shares=shares(arr,'focus_power',mask),source_spectral=source_spectral(p),physical_same_f0_proof=proof,
+            records[kind]=dict(low_shares=shares(arr,'low_power',mask),body_shares=shares(arr,'body_power',mask),focus_shares=shares(arr,'focus_power',mask),source_spectral=source_spectral(p),physical_same_f0_proof=proof,
                 bass_pitch_context1_median=float(np.median(arr['bass_f0_hz'][0,mask])),bass_pitch_context2_median=float(np.median(arr['bass_f0_hz'][1,mask])),bass_periodicity_min_q20=float(np.percentile(arr['bass_periodicity'][:,mask].min(axis=0),20)),source_sha256=ident.file_sha256)
+        if any(work.iterdir()):raise RuntimeError('Observer work leaked')
         result=dict(success=True,records=records,scope='REAL_SPLEETER_FEATURE_DIAGNOSTIC;_GENERATED_COUNTEREXAMPLES;_NO_PRIVATE_AUDIO',stem_audio_saved=False)
         (OUT/'SUMMARY.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8');print('P03A_ROLE_DIAG '+json.dumps(result,ensure_ascii=True),flush=True)
     shutil.rmtree(ROOT/'P02_CAPSULE_WORK',ignore_errors=False)

@@ -43,7 +43,7 @@ runtime manifest SHA256 `f97c83aa0619b5c315d1ae54b13fa300e7e35043dd241a1e67a8108
 
 Spleeter 4/4、HDEMUCS research baseline 3/4。vocal_lowでHDEMUCSはbassとして広域減算を1.0許可しcounterfactual 55Hz補強も許可した一方、Spleeterは対象を主に`other`へ割当て、PDRMの広域減算許可0、同一基音補強も拒否した。これは一般的source-separation優越性や私有実曲精度の証明ではなく、PDRMの操作安全counterexampleに対する結果。
 
-比較artifact ID `10272729312`、SHA256 `571e3a7b36c8c4997132bf0f951a24e471db5b47a96a1c5e37f912744cc5bc40`。HDEMUCS checkpointはCI終了前に削除し配布物へ含めていない。
+比較artifact ID `10272729312`、ZIP SHA256 `571e3a7b36c8c4997132bf0f951a24e471db5b47a96a1c5e37f912744cc5bc40`。HDEMUCS checkpointはCI終了前に削除し配布物へ含めていない。
 
 ## 次の主タスク P03
 

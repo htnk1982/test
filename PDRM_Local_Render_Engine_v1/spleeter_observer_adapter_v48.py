@@ -3,14 +3,16 @@
 This is the only bridge from the Python 3.12 mastering process to the packaged
 Python 3.11/TensorFlow observer. It returns the existing role-observer schema;
 no stem sample crosses this boundary and no TensorFlow import occurs here.
+The runtime is deployable, while its current evidence scope remains LAB/research
+until private-audio calibration and product acceptance are completed.
 """
 from __future__ import annotations
 from pathlib import Path
 import json
 import observer_runtime_client_v47 as client
-from integration_contract_v40 import digest,file_hash,valid_hash
+from integration_contract_v40 import digest,file_hash
 
-VERSION='spleeter-observer-adapter-0.1.0'
+VERSION='spleeter-observer-adapter-0.1.1'
 PROVIDER='spleeter_runtime48'
 EXPECTED_MODEL_ASSET_SHA256='3adb4a50ad4eb18c7c4d65fcf4cf2367a07d48408a5eb7d03cd20067429dfaa8'
 ROLE_SCHEMA='role-observer-0.2.0'
@@ -32,11 +34,11 @@ class SpleeterRuntimeObserver:
         if pp!=expected:raise RuntimeError('Observer preprocessing changed without recalibration')
         if manifest.get('offline_policy')!=dict(model_download_at_runtime=False,stem_audio_persisted=False,stem_audio_in_master=False):
             raise RuntimeError('Observer offline/output policy changed')
-        identity=dict(provider=PROVIDER,evidence_scope='deployable_observer',model='SPLEETER_4STEMS_V1_4_0',
-            model_asset_sha256=manifest['model_asset_sha256'],runtime_manifest_sha256=manifest['sha256'],worker_sha256=manifest['worker_sha256'],
+        identity=dict(provider=PROVIDER,evidence_scope='research_observer',deployment_class='SELF_CONTAINED_WINDOWS_RUNTIME_CANDIDATE',
+            model='SPLEETER_4STEMS_V1_4_0',model_asset_sha256=manifest['model_asset_sha256'],runtime_manifest_sha256=manifest['sha256'],worker_sha256=manifest['worker_sha256'],
             worker_version=manifest['worker_version'],packages=manifest['packages'],preprocessing_sha256=digest(pp),
             client_sha256=file_hash(Path(__file__).with_name('observer_runtime_client_v47.py')),adapter_sha256=file_hash(__file__),
-            stem_audio_in_master=False,runtime_model_download=False)
+            stem_audio_in_master=False,runtime_model_download=False,private_audio_calibrated=False,product_release=False)
         return identity
 
     def identity(self):

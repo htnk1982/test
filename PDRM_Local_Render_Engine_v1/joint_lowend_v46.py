@@ -15,7 +15,7 @@ import joint_lowend_v42 as base
 from physical_add_bridge_v46 import SameFundamentalAdd
 from integration_contract_v40 import capture,digest,integer,valid_hash
 
-VERSION='joint-lowend-lab-0.2.0'
+VERSION='joint-lowend-lab-0.2.1'
 MAX_ACTIVE_ADDS=1
 CONFLICT_DB=.02
 
@@ -31,9 +31,10 @@ def compile_plan(snapshot,reduction_plan,additions,*,planner_id,calibration_sha2
     # Bass/sub additions are currently monophonic by design. Overlapping events
     # must be resolved by the musical planner rather than silently summed.
     intervals=[]
-    for a in adds:
-        start=snapshot.clock.nearest(a.source_frames[0]);stop=snapshot.clock.nearest(a.source_frames[-1]);intervals.append((start,stop,a))
-    for (a,b,_),(c,d,_) in zip(sorted(intervals),sorted(intervals)[1:]):
+    for add in adds:
+        start=snapshot.clock.nearest(add.source_frames[0]);stop=snapshot.clock.nearest(add.source_frames[-1]);intervals.append((start,stop,add))
+    intervals=sorted(intervals,key=lambda row:(row[0],row[1],row[2].proposal_id))
+    for (a,b,_),(c,d,_) in zip(intervals,intervals[1:]):
         if c<b:raise ValueError('Overlapping same-fundamental additions require planner resolution')
     # Explicit no-fight rule: broad low-band attenuation and sub addition cannot
     # coexist during positive addition support. Narrow cuts start >=120 Hz.

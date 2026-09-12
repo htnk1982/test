@@ -51,7 +51,7 @@ def assert_audio_semantics_equal(a,b):
         if list(old['source_frames'])!=list(new['source_frames']):raise RuntimeError('addition frames differ')
         if not np.allclose(old['envelope'],new['envelope'],rtol=0,atol=1e-9):raise RuntimeError('addition envelope differs')
         if abs(float(old['amplitude'])-float(new['amplitude']))>1e-9:raise RuntimeError('addition amplitude differs')
-        if abs(float(old['phase'])-float(new['phase']))>1e-9:raise RuntimeError('addition phase differs')
+        if abs(float(old['phase_radians'])-float(new['phase_radians']))>1e-9:raise RuntimeError('addition phase differs')
 
 
 def main():

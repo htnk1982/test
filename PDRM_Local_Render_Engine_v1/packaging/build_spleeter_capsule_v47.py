@@ -70,6 +70,21 @@ def package_versions(python,runtime):
     return json.loads(out.strip().splitlines()[-1])
 
 
+def bundle_vc_runtime(runtime):
+    """Deploy MSVC v14 runtime beside embedded python (application-local)."""
+    system32=Path(os.environ.get('SystemRoot',r'C:\\Windows'))/'System32'
+    patterns=('vcruntime140*.dll','msvcp140*.dll','concrt140.dll','vcomp140.dll','vccorlib140.dll')
+    copied={}
+    for pattern in patterns:
+        for src in sorted(system32.glob(pattern)):
+            if not src.is_file():continue
+            dst=runtime/src.name;shutil.copy2(src,dst)
+            copied[src.name]=dict(sha256=sha(dst),bytes=dst.stat().st_size)
+    for required in ('vcruntime140.dll','msvcp140.dll'):
+        if required not in copied:raise RuntimeError('Required Microsoft VC runtime DLL missing on builder: '+required)
+    return copied
+
+
 def main():
     if sys.platform!='win32' or platform.machine().lower() not in ('amd64','x86_64'):raise RuntimeError('Windows x64 builder required')
     if sys.version_info[:2]!=(3,11):raise RuntimeError('Build host must use Python 3.11')
@@ -88,14 +103,12 @@ def main():
         checks=json.loads(index.read_text(encoding='utf-8'));expected=checks.get('4stems');actual=sha(asset)
         if not isinstance(expected,str) or expected!=actual:raise RuntimeError('Official Spleeter model archive checksum mismatch')
         model=runtime/'models'/'4stems';model.mkdir(parents=True);safe_tar(asset,model)
-        # The official v1.4.0 archive contains macOS AppleDouble sidecars such as
-        # ._checkpoint. They are not TensorFlow model components and may be
-        # rewritten by NAS/filesystem tooling, so never package or attest them.
         ignored_metadata=[]
         for p in sorted(model.rglob('._*')):
             if p.is_file():
                 ignored_metadata.append(str(p.relative_to(model)).replace('\\','/'));p.unlink()
         (model/'.probe').write_text('PDRM_OFFLINE_OK\n',encoding='utf-8')
+    vc_runtime_files=bundle_vc_runtime(runtime)
     worker_source=ROOT/'observer_worker_spleeter_v47.py';worker=runtime/worker_source.name;shutil.copyfile(worker_source,worker)
     python=runtime/'python.exe';versions=package_versions(python,runtime)
     if versions['spleeter']!='2.4.2' or versions['tensorflow']!='2.12.1' or versions['tensorflow-io-gcs-filesystem']!='0.31.0':raise RuntimeError('Unexpected isolated dependency versions '+repr(versions))
@@ -107,9 +120,9 @@ def main():
             model_files[str(p.relative_to(model)).replace('\\','/')]=dict(sha256=sha(p),bytes=p.stat().st_size)
     if not model_files:raise RuntimeError('No packaged model files')
     manifest=dict(schema=1,runtime='CPython-embed-win_amd64',python_version=PYTHON_VERSION,python_embed_url=PYTHON_URL,python_embed_sha256=sha(out/'PDRM_OBSERVER_RUNTIME'/'python311.zip'),
-        worker_version='spleeter-observer-worker-0.1.0',worker_sha256=sha(worker),spleeter_release=SPLEETER_RELEASE,
+        worker_version='spleeter-observer-worker-0.2.0',worker_sha256=sha(worker),spleeter_release=SPLEETER_RELEASE,
         model_asset=MODEL_ASSET,model_asset_url=SPLEETER_BASE+'/'+MODEL_ASSET,model_asset_sha256=actual,
-        model_files=model_files,ignored_archive_metadata=ignored_metadata,packages=versions,source_order=['mix','drums','bass','other','vocals'],
+        model_files=model_files,ignored_archive_metadata=ignored_metadata,vc_runtime_files=vc_runtime_files,vc_runtime_deployment='APPLICATION_LOCAL',packages=versions,source_order=['mix','drums','bass','other','vocals'],
         preprocessing=dict(separator_rate_hz=44100,feature_rate_hz=12000,feature_hop_samples=120,feature_window_samples=720,
             bands_hz=dict(low=[25,120],body=[120,300],focus=[300,450],upper_focus=[450,700]),contexts_required=2,max_core_seconds=16,max_pad_seconds=4),
         offline_policy=dict(model_download_at_runtime=False,stem_audio_persisted=False,stem_audio_in_master=False),
@@ -117,8 +130,11 @@ def main():
         product_quality='NOT_EVALUATED')
     manifest['sha256']=digest(manifest);(runtime/'PDRM_OBSERVER_RUNTIME_MANIFEST.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     selftest=subprocess.check_output([str(python),'-I',str(worker),'--self-test'],cwd=runtime,text=True,encoding='utf-8',stderr=subprocess.STDOUT)
+    st=json.loads(selftest.strip().splitlines()[-1])
+    if not st.get('success') or not st.get('native_extensions_loaded') or not st.get('application_local_vc_runtime'):
+        raise RuntimeError('Native observer runtime self-test did not prove DLL loading')
     result=dict(success=True,runtime_dir=str(runtime),runtime_bytes=sum(p.stat().st_size for p in runtime.rglob('*') if p.is_file()),file_count=sum(1 for p in runtime.rglob('*') if p.is_file()),
-        manifest_sha256=manifest['sha256'],model_asset_sha256=actual,worker_sha256=manifest['worker_sha256'],ignored_archive_metadata=ignored_metadata,versions=versions,selftest=selftest.strip(),host_python=sys.version)
+        manifest_sha256=manifest['sha256'],model_asset_sha256=actual,worker_sha256=manifest['worker_sha256'],ignored_archive_metadata=ignored_metadata,vc_runtime_files=vc_runtime_files,versions=versions,selftest=selftest.strip(),host_python=sys.version)
     (out/'BUILD_RESULT.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     print('P02_CAPSULE_BUILD '+json.dumps(result,ensure_ascii=True),flush=True)
 

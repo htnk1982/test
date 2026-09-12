@@ -1,17 +1,19 @@
 """Isolated analysis-only Spleeter worker for PDRM.
 
-The worker receives one sealed JSON request and writes one sealed JSON response.
+The worker receives sealed JSON requests and writes sealed JSON responses.
 Separated waveforms never leave process memory and are never mixed into output.
-This module is intended to live inside a dedicated Python 3.11 runtime capsule,
-separate from the Python 3.12/Numpy2 mastering process.
+One-shot mode remains available as an equivalence oracle. Persistent mode keeps
+one TensorFlow/Spleeter Separator alive across sequential observation windows.
 """
 from __future__ import annotations
 from pathlib import Path
-import argparse,hashlib,json,math,os,sys,tempfile,urllib.request
+import argparse,hashlib,json,math,os,sys,tempfile,time,traceback,urllib.request
 
 VERSION='spleeter-observer-worker-0.2.0'
 REQUEST_VERSION='pdrm-observer-request-0.1.0'
 RESPONSE_VERSION='pdrm-observer-response-0.1.0'
+SESSION_VERSION='pdrm-observer-session-0.1.0'
+SESSION_ERROR_VERSION='pdrm-observer-session-error-0.1.0'
 MANIFEST_NAME='PDRM_OBSERVER_RUNTIME_MANIFEST.json'
 MODEL='spleeter:4stems'
 SOURCE_ORDER=('mix','drums','bass','other','vocals')
@@ -52,6 +54,10 @@ def _atomic_json(path,value):
         os.replace(tmp,path)
     finally:
         if tmp.exists():tmp.unlink()
+
+
+def _seal(value):
+    out=dict(value);out['sha256']=digest(out);return out
 
 
 def _runtime_root():return Path(__file__).resolve().parent
@@ -99,9 +105,19 @@ def _disable_downloads():
     os.environ['NO_PROXY']='*';os.environ['no_proxy']='*'
 
 
-def _features(original,stems,sr,start):
+def _load_runtime():
+    manifest=_manifest();model_root=_runtime_root()/'models';os.environ['MODEL_PATH']=str(model_root);_disable_downloads()
     import numpy as np
+    import scipy
+    import soundfile as sf
+    import tensorflow as tf
     from scipy import signal
+    from spleeter.separator import Separator
+    separator=Separator(MODEL,multiprocess=False)
+    return manifest,separator,np,scipy,sf,tf,signal
+
+
+def _features(original,stems,sr,start,np,signal):
     from scipy.ndimage import uniform_filter1d
     src=np.stack((original,stems['drums'],stems['bass'],stems['other'],stems['vocals']),axis=0)
     g=math.gcd(sr,12000);x=signal.resample_poly(src,12000//g,sr//g,axis=1,window=('kaiser',10.5));sr=12000
@@ -124,17 +140,11 @@ def _features(original,stems,sr,start):
     return out
 
 
-def run(request_path,response_path):
-    manifest=_manifest();request=_sealed_read(request_path);source,start,end,pads=_validate_request(request)
-    import soundfile as sf
-    from scipy import signal
-    import numpy as np
+def _process(request,manifest,separator,np,sf,tf,signal,*,persistent_session):
+    source,start,end,pads=_validate_request(request)
     info=sf.info(source)
     if info.channels!=2 or not (0<=start<end<=info.duration):raise ValueError('Source geometry/core mismatch')
-    model_root=_runtime_root()/'models';os.environ['MODEL_PATH']=str(model_root);_disable_downloads()
-    import tensorflow as tf
-    from spleeter.separator import Separator
-    separator=Separator(MODEL,multiprocess=False);contexts=[];reconstruction=[]
+    contexts=[];reconstruction=[]
     for pad_seconds in pads:
         left=max(0.,start-pad_seconds);right=min(info.duration,end+pad_seconds)
         with sf.SoundFile(source) as f:
@@ -147,7 +157,7 @@ def run(request_path,response_path):
         i=round((start-left)*44100);j=i+round((end-start)*44100);core=x[i:j]
         s={k:np.asarray(v[i:j],dtype=np.float32) for k,v in stems.items()}
         if len(core)!=j-i:raise RuntimeError('Observer core clock mismatch')
-        contexts.append(_features(core,s,44100,start))
+        contexts.append(_features(core,s,44100,start,np,signal))
         summed=s['vocals']+s['drums']+s['bass']+s['other'];num=np.sqrt(np.mean((summed-core)**2));den=max(np.sqrt(np.mean(core**2)),1e-12)
         reconstruction.append(float(20*np.log10(max(num/den,1e-15))))
         del stems,s,raw,x,core,summed
@@ -160,30 +170,77 @@ def run(request_path,response_path):
         source_sha256=request['source_sha256'],source_name=source.name,source_samplerate=info.samplerate,source_frames=info.frames,
         start_seconds=start,end_seconds=end,contexts_seconds=list(pads),source_order=list(SOURCE_ORDER),reconstruction_error_db=reconstruction,
         probabilities_calibrated=False,stem_audio_persisted=False,stem_audio_in_master=False,network_downloads_allowed=False,
-        runtime_executable=str(Path(sys.executable).resolve()),runtime_prefix=str(Path(sys.prefix).resolve()),tensorflow_version=tf.__version__)
+        runtime_executable=str(Path(sys.executable).resolve()),runtime_prefix=str(Path(sys.prefix).resolve()),tensorflow_version=tf.__version__,
+        worker_pid=os.getpid(),persistent_session=bool(persistent_session))
     response=dict(schema=1,version=RESPONSE_VERSION,request_sha256=request['sha256'],arrays=arrays,meta=meta)
-    response['sha256']=digest(response);_atomic_json(response_path,response)
+    response['sha256']=digest(response)
+    return response
+
+
+def run(request_path,response_path):
+    manifest,separator,np,scipy,sf,tf,signal=_load_runtime()
+    request=_sealed_read(request_path)
+    response=_process(request,manifest,separator,np,sf,tf,signal,persistent_session=False)
+    _atomic_json(response_path,response)
+
+
+def _session_error(request_name,exc):
+    return _seal(dict(schema=1,version=SESSION_ERROR_VERSION,request_name=request_name,error_type=type(exc).__name__,
+        error=str(exc),traceback=traceback.format_exc(),worker_pid=os.getpid()))
+
+
+def serve(session_dir):
+    session=Path(session_dir).resolve()
+    if not session.is_dir() or session.is_symlink():raise ValueError('Persistent session directory must be a regular directory')
+    manifest,separator,np,scipy,sf,tf,signal=_load_runtime()
+    ready=_seal(dict(schema=1,version=SESSION_VERSION,worker_version=VERSION,manifest_sha256=manifest['sha256'],
+        worker_pid=os.getpid(),native_extensions_loaded=True,separator_initialized=True,network_downloads_allowed=False,
+        stem_audio_persisted=False,stem_audio_in_master=False))
+    _atomic_json(session/'READY.json',ready)
+    while True:
+        if (session/'STOP').exists():break
+        jobs=sorted(session.glob('job-*.request.json'))
+        if not jobs:
+            time.sleep(.02);continue
+        request_path=jobs[0]
+        processing=request_path.with_name(request_path.name.replace('.request.json','.processing.json'))
+        try:
+            os.replace(request_path,processing)
+        except FileNotFoundError:
+            continue
+        token=processing.name[len('job-'):-len('.processing.json')]
+        response_path=session/f'job-{token}.response.json'
+        error_path=session/f'job-{token}.error.json'
+        try:
+            request=_sealed_read(processing)
+            response=_process(request,manifest,separator,np,sf,tf,signal,persistent_session=True)
+            _atomic_json(response_path,response)
+        except Exception as exc:
+            _atomic_json(error_path,_session_error(processing.name,exc))
+        finally:
+            processing.unlink(missing_ok=True)
+    stopped=_seal(dict(schema=1,version=SESSION_VERSION,worker_version=VERSION,worker_pid=os.getpid(),stopped=True))
+    try:_atomic_json(session/'STOPPED.json',stopped)
+    except FileExistsError:pass
 
 
 def self_test():
-    m=_manifest();model_root=_runtime_root()/'models';os.environ['MODEL_PATH']=str(model_root);_disable_downloads()
-    import numpy as np
-    import scipy
-    import soundfile as sf
-    import tensorflow as tf
-    from spleeter.separator import Separator
-    separator=Separator(MODEL,multiprocess=False)
+    m,separator,np,scipy,sf,tf,signal=_load_runtime()
     value=dict(success=True,worker_version=VERSION,python=sys.version,executable=str(Path(sys.executable).resolve()),prefix=str(Path(sys.prefix).resolve()),
         packages=dict(spleeter='2.4.2',tensorflow=tf.__version__,numpy=np.__version__,scipy=scipy.__version__,soundfile=sf.__version__),
         manifest_sha256=m['sha256'],network_downloads_allowed=False,native_extensions_loaded=True,separator_initialized=separator is not None,
-        application_local_vc_runtime=True,vc_runtime_files=sorted(m['vc_runtime_files']))
+        persistent_mode_available=True,application_local_vc_runtime=True,vc_runtime_files=sorted(m['vc_runtime_files']))
     print(json.dumps(value,ensure_ascii=True),flush=True)
 
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--request');ap.add_argument('--response');ap.add_argument('--self-test',action='store_true');a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--request');ap.add_argument('--response');ap.add_argument('--self-test',action='store_true');ap.add_argument('--serve-dir');a=ap.parse_args()
+    modes=int(a.self_test)+int(bool(a.serve_dir))+int(bool(a.request or a.response))
+    if modes!=1:raise SystemExit('choose exactly one mode: self-test, serve-dir, or request/response')
     if a.self_test:self_test();return
+    if a.serve_dir:serve(Path(a.serve_dir));return
     if not a.request or not a.response:raise SystemExit('request/response required')
     run(Path(a.request),Path(a.response))
+
 
 if __name__=='__main__':main()

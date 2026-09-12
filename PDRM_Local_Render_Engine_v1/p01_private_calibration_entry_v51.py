@@ -6,7 +6,7 @@ GUI, privacy boundary, failure record and fixture code remain unchanged.
 """
 from __future__ import annotations
 from pathlib import Path
-import json
+import json,time
 
 import automatic_joint_v51 as planner51
 import p01_private_calibration_entry as legacy
@@ -41,11 +41,13 @@ def _failure_record(output,source,reference,exc):
 def calibrate(source,reference,output,*,targets=None):
     # Deliberately patch only the legacy module's planner handle and the P01
     # boundary callback. All other established P01 behavior remains unchanged.
+    started=time.monotonic()
     legacy.planner50=planner51
     legacy._reference_files=_reference_files
     final,manifest=legacy.calibrate(source,reference,output,targets=targets)
     manifest['version']=VERSION
     manifest['planner_implementation']=planner51.VERSION
     manifest['accepted_p03a_commit']=ACCEPTED_P03A_COMMIT
+    manifest['performance']=dict(elapsed_seconds=float(time.monotonic()-started),timing_scope='P01_CALIBRATE_END_TO_END')
     (Path(final)/'CALIBRATION_MANIFEST.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     return final,manifest

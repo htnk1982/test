@@ -1,7 +1,7 @@
 """Contracts for automatic_joint_v51 observer pruning; synthetic audio only."""
 from pathlib import Path
 from unittest import mock
-import json,tempfile,unittest
+import tempfile,unittest
 import numpy as np
 import soundfile as sf
 
@@ -48,10 +48,9 @@ class FailObserver(FixtureObserver):
 
 
 def semantics(plan):
-    broad=plan['reduction_plan']['broad_plan']
-    adds=[]
+    broad=plan['reduction_plan']['broad_plan'];adds=[]
     for a in plan['additions']:
-        adds.append(dict(target_hz=round(float(a['target_hz']),9),source_frames=list(a['source_frames']),envelope=[round(float(x),12) for x in a['envelope']],amplitude=round(float(a['amplitude']),12),phase=round(float(a['phase']),12)))
+        adds.append(dict(target_hz=round(float(a['target_hz']),9),source_frames=list(a['source_frames']),envelope=[round(float(x),12) for x in a['envelope']],amplitude=round(float(a['amplitude']),12),phase_radians=round(float(a['phase_radians']),12)))
     return dict(low_cut_db=[round(float(x),12) for x in broad['low_cut_db']],additions=adds)
 
 

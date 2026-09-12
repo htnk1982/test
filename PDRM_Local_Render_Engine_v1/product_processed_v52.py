@@ -13,7 +13,7 @@ import hashlib,json
 import processed_integration as base
 import processed_finish as publisher
 import crash_recovery_v43 as recovery
-from integration_contract_v40 import capture,digest
+from integration_contract_v40 import digest
 from target_settings import Targets
 
 VERSION='product-processed-candidate-0.1.0'
@@ -105,6 +105,8 @@ def run_file(source,work_root=None,*,planner=None,targets=None,
         return dict(
             result,
             publication_scope='PRODUCT_CANDIDATE_NOT_FINAL',
+            quality_status=evidence['quality_status'],
+            lowend_assessment=evidence['lowend_assessment'],
             product_candidate=True,
             product_version=VERSION,
             planner_identity=backend.planner_identity,

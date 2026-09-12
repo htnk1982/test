@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 import argparse,hashlib,json,math,os,sys,tempfile,urllib.request
 
-VERSION='spleeter-observer-worker-0.1.0'
+VERSION='spleeter-observer-worker-0.2.0'
 REQUEST_VERSION='pdrm-observer-request-0.1.0'
 RESPONSE_VERSION='pdrm-observer-response-0.1.0'
 MANIFEST_NAME='PDRM_OBSERVER_RUNTIME_MANIFEST.json'
@@ -62,6 +62,13 @@ def _manifest():
     value=_sealed_read(p,8*1024*1024)
     if value.get('schema')!=1 or value.get('worker_version')!=VERSION:raise RuntimeError('Runtime manifest version mismatch')
     if value.get('worker_sha256')!=file_hash(__file__):raise RuntimeError('Worker source changed')
+    vc=value.get('vc_runtime_files')
+    if not isinstance(vc,dict) or 'vcruntime140.dll' not in vc or 'msvcp140.dll' not in vc:
+        raise RuntimeError('Application-local VC runtime manifest missing')
+    for name,meta in vc.items():
+        f=root/name
+        if not f.is_file() or f.is_symlink() or f.stat().st_size!=meta['bytes'] or file_hash(f)!=meta['sha256']:
+            raise RuntimeError('VC runtime file integrity mismatch: '+name)
     model_root=root/'models'/'4stems'
     if not (model_root/'.probe').is_file():raise RuntimeError('Offline model probe missing')
     for rel,meta in value.get('model_files',{}).items():
@@ -96,7 +103,6 @@ def _features(original,stems,sr,start):
     import numpy as np
     from scipy import signal
     from scipy.ndimage import uniform_filter1d
-    # source axis: mix, drums, bass, other, vocals. Preserve stereo energy.
     src=np.stack((original,stems['drums'],stems['bass'],stems['other'],stems['vocals']),axis=0)
     g=math.gcd(sr,12000);x=signal.resample_poly(src,12000//g,sr//g,axis=1,window=('kaiser',10.5));sr=12000
     hop=120;window=720;out={'time':(start+np.arange(0,x.shape[1],hop)/sr).tolist()}
@@ -125,7 +131,6 @@ def run(request_path,response_path):
     import numpy as np
     info=sf.info(source)
     if info.channels!=2 or not (0<=start<end<=info.duration):raise ValueError('Source geometry/core mismatch')
-    # Force Spleeter to the packaged model directory before it is imported.
     model_root=_runtime_root()/'models';os.environ['MODEL_PATH']=str(model_root);_disable_downloads()
     import tensorflow as tf
     from spleeter.separator import Separator
@@ -161,9 +166,17 @@ def run(request_path,response_path):
 
 
 def self_test():
-    m=_manifest();import importlib.metadata as im
+    m=_manifest();model_root=_runtime_root()/'models';os.environ['MODEL_PATH']=str(model_root);_disable_downloads()
+    import numpy as np
+    import scipy
+    import soundfile as sf
+    import tensorflow as tf
+    from spleeter.separator import Separator
+    separator=Separator(MODEL,multiprocess=False)
     value=dict(success=True,worker_version=VERSION,python=sys.version,executable=str(Path(sys.executable).resolve()),prefix=str(Path(sys.prefix).resolve()),
-        packages={n:im.version(n) for n in ('spleeter','tensorflow','numpy','scipy','soundfile')},manifest_sha256=m['sha256'],network_downloads_allowed=False)
+        packages=dict(spleeter='2.4.2',tensorflow=tf.__version__,numpy=np.__version__,scipy=scipy.__version__,soundfile=sf.__version__),
+        manifest_sha256=m['sha256'],network_downloads_allowed=False,native_extensions_loaded=True,separator_initialized=separator is not None,
+        application_local_vc_runtime=True,vc_runtime_files=sorted(m['vc_runtime_files']))
     print(json.dumps(value,ensure_ascii=True),flush=True)
 
 

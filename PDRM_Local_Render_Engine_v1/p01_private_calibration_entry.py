@@ -7,7 +7,7 @@ a sibling isolated runtime and stem audio is never exported or mixed to output.
 from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import argparse, json, os, shutil, sys, zipfile
+import argparse, hashlib, json, os, shutil, sys, time, zipfile
 
 import numpy as np
 import soundfile as sf
@@ -18,7 +18,7 @@ import integrated_finish_v40 as finish
 from integration_contract_v40 import capture, file_hash
 from target_settings import Targets
 
-VERSION = "p01-private-calibration-0.1.0"
+VERSION = "p01-private-calibration-0.1.1"
 ACCEPTED_P03A_COMMIT = "50a4592e45b3f810e905041c25cff1c3e35b2a88"
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".aif", ".aiff"}
 
@@ -66,7 +66,10 @@ def _reference_files(reference: Path, temp: Path):
 
 
 def _hash_manifest(paths):
-    return [dict(name=p.name, sha256=file_hash(p), bytes=p.stat().st_size) for p in paths]
+    return [
+        dict(name=p.name, sha256=file_hash(p), bytes=p.stat().st_size)
+        for p in paths
+    ]
 
 
 def _copy_verified(src: Path, dst: Path):
@@ -140,6 +143,7 @@ def calibrate(source, reference, output, *, targets=None):
             requested_targets=report.get("requested_targets"),
             master_metrics=report.get("master_metrics"),
             codec_metrics=report.get("codec_metrics"),
+            outputs={p.name: file_hash(p) for p in final.iterdir() if p.is_file()},
             source_unchanged=True,
             private_audio_uploaded=False,
             stem_audio_exported=False,
@@ -147,10 +151,14 @@ def calibrate(source, reference, output, *, targets=None):
             subjective_quality="REQUIRES_LOCAL_LISTENING_REVIEW",
             product_release=False,
         )
+        (final / "CALIBRATION_MANIFEST.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8"
+        )
         (final / "REVIEW.md").write_text(
             "# PDRM P01 実曲レビュー\n\n"
             "これは製品版の合格判定ではなく、P03の量・発動タイミング校正用です。\n\n"
-            "## 聴く順序\n1. 元音源\n2. `MASTER.wav`\n3. `LISTEN_320kbps.mp3`\n\n"
+            "## 聴く順序\n"
+            "1. 元音源\n2. `MASTER.wav`\n3. `LISTEN_320kbps.mp3`\n\n"
             "## 記録すること\n"
             "- 低域が増減すべきでない場所で動いていないか\n"
             "- 低域の芯・重さが改善したか、過剰か、不足か\n"
@@ -189,18 +197,25 @@ def _fixture_source(sr=48000, seconds=7.):
 
 
 def self_test(dest):
-    dest=Path(dest).resolve();dest.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="p01_selftest_") as td:
-        root=Path(td);refs=root/"refs";refs.mkdir()
+    dest=Path(dest).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="p01_selftest_source_") as source_td, TemporaryDirectory(prefix="p01_selftest_output_") as output_td:
+        root=Path(source_td);refs=root/"refs";refs.mkdir()
         for i in range(4):
             sf.write(refs/f"ref{i}.wav", _fixture_reference(phase=.19*i,level=.105+.004*i), 48000, subtype="DOUBLE")
-        source=root/"private-like source.wav";sf.write(source,_fixture_source(),48000,subtype="DOUBLE")
-        final,manifest=calibrate(source,refs,root/"out")
+        reference_zip=root/"reference.zip"
+        with zipfile.ZipFile(reference_zip,"w",compression=zipfile.ZIP_DEFLATED) as z:
+            for p in sorted(refs.glob("*.wav")):z.write(p,arcname="reference/"+p.name)
+        source=root/"private-like source.wav"
+        sf.write(source,_fixture_source(),48000,subtype="DOUBLE")
+        final,manifest=calibrate(source,reference_zip,Path(output_td))
         if not (final/"MASTER.wav").is_file() or not (final/"LISTEN_320kbps.mp3").is_file():
             raise RuntimeError("Self-test final audio missing")
         summary=dict(
             success=True, version=VERSION, accepted_p03a_commit=ACCEPTED_P03A_COMMIT,
-            frozen=bool(getattr(sys,"frozen",False)), source_unchanged=manifest["source_unchanged"],
+            frozen=bool(getattr(sys,"frozen",False)),
+            source_unchanged=manifest["source_unchanged"],
+            reference_zip_exercised=True,
             accepted_additions=(manifest.get("planner_report") or {}).get("accepted_additions"),
             observer_provider=((manifest.get("planner_identity") or {}).get("observer") or {}).get("provider"),
             stem_audio_in_master=False, private_audio=False, product_release=False,
@@ -216,19 +231,25 @@ def gui():
     source=filedialog.askopenfilename(title="P01: 実曲WAV/FLACを選択",filetypes=[("Audio","*.wav *.flac")])
     if not source:return 2
     reference=filedialog.askopenfilename(title="P01: reference.zipを選択",filetypes=[("ZIP","*.zip")])
-    if not reference:reference=filedialog.askdirectory(title="P01: 参照音源フォルダを選択")
+    if not reference:
+        reference=filedialog.askdirectory(title="P01: 参照音源フォルダを選択")
     if not reference:return 2
     output=filedialog.askdirectory(title="P01: 結果保存先（元音源フォルダ以外）を選択")
     if not output:return 2
-    try:final,_=calibrate(source,reference,output)
+    try:
+        final,_=calibrate(source,reference,output)
     except Exception as e:
-        messagebox.showerror("PDRM P01", f"処理に失敗しました。\n\n{type(e).__name__}: {e}");return 1
-    messagebox.showinfo("PDRM P01", "完了しました。\n\n"+str(final));return 0
+        messagebox.showerror("PDRM P01", f"処理に失敗しました。\n\n{type(e).__name__}: {e}")
+        return 1
+    messagebox.showinfo("PDRM P01", "完了しました。\n\n"+str(final))
+    return 0
 
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument("--source");ap.add_argument("--reference");ap.add_argument("--output")
-    ap.add_argument("--self-test", action="store_true");ap.add_argument("--self-test-output");args=ap.parse_args()
+    ap=argparse.ArgumentParser()
+    ap.add_argument("--source");ap.add_argument("--reference");ap.add_argument("--output")
+    ap.add_argument("--self-test", action="store_true");ap.add_argument("--self-test-output")
+    args=ap.parse_args()
     if args.self_test:
         if not args.self_test_output:raise SystemExit("--self-test-output required")
         print(json.dumps(self_test(args.self_test_output),ensure_ascii=True),flush=True);return
@@ -238,4 +259,5 @@ def main():
     raise SystemExit(gui())
 
 
-if __name__=="__main__":main()
+if __name__=="__main__":
+    main()

@@ -52,15 +52,16 @@ def _references(reference,temp,*,allow_fixture_reference=False):
 def run_manifest(path,*,runtime_override=None,expected_reference_sha=None,
                  allow_fixture_reference=False):
     """Run a sealed batch. Override arguments are for imported CI verifier only."""
-    manifest=_read(path,expected_reference_sha)
-    targets=Targets.from_fields(manifest['targets'])
-    sources=[Path(p) for p in manifest['sources']]
-    work=Path(manifest['work_root']).absolute();work.mkdir(parents=True,exist_ok=True)
-    session=Path(manifest['session_dir']).absolute()
-    status=gui44.StatusProgress(session,manifest['sha256'])
-    status.file_total=len(sources)
-    observer=None
+    manifest=None;session=None;status=None;observer=None
     try:
+        manifest=_read(path,expected_reference_sha)
+        targets=Targets.from_fields(manifest['targets'])
+        sources=[Path(p) for p in manifest['sources']]
+        work=Path(manifest['work_root']).absolute();work.mkdir(parents=True,exist_ok=True)
+        session=Path(manifest['session_dir']).absolute()
+        status=gui44.StatusProgress(session,manifest['sha256'])
+        status.file_total=len(sources)
+
         status.set('REFERENCE_LOCAL_DECODE',0,1)
         with TemporaryDirectory(prefix='p08_reference_',dir=work) as ref_td, \
              TemporaryDirectory(prefix='p08_observer_',dir=work) as observer_td:
@@ -105,16 +106,22 @@ def run_manifest(path,*,runtime_override=None,expected_reference_sha=None,
             gui44.atomic_json(session/'product_summary.json',final)
             return final
     except InterruptedError as exc:
+        if status is None:
+            raise
         final=status._write('CANCELLED',0,1,'CANCELLED',cancel_reason=str(exc))
         gui44.atomic_json(session/'product_summary.json',dict(final,product_worker_version=VERSION))
         return final
     except Exception as exc:
         failure=dict(
             schema=1,version=VERSION,error_type=type(exc).__name__,error=str(exc),
-            traceback=traceback.format_exc(),manifest_sha256=manifest.get('sha256') if 'manifest' in locals() else None,
+            traceback=traceback.format_exc(),
+            manifest_sha256=(manifest or {}).get('sha256'),
         )
-        gui44.atomic_json(session/'PRODUCT_FAILURE.json',failure)
-        status._write('FAILED',0,1,'FAILED',failures=[dict(error_type=type(exc).__name__,error=str(exc))])
+        if session is not None:
+            gui44.atomic_json(session/'PRODUCT_FAILURE.json',failure)
+        if status is not None:
+            status.failures.append(dict(file=status.current_file,error_type=type(exc).__name__,error=str(exc)))
+            status._write('FAILED',0,1,'FAILED')
         raise
     finally:
         if observer is not None:

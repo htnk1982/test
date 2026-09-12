@@ -52,12 +52,15 @@ jobs:
         run: python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1 pyloudnorm==0.2.0 imageio-ffmpeg==0.6.0 psutil==7.0.0 pyinstaller==6.16.0
       - name: Build and execute frozen private-calibration self-test
         run: python packaging/build_p01_private_calibration_bundle.py
-      - name: Assert offline probe exists before artifact packaging
+      - name: Assert distributable runtime before artifact packaging
         shell: pwsh
         run: |
-          $probe = 'P01_PRIVATE_BUNDLE/PDRM_P01_Private_Calibration/PDRM_OBSERVER_RUNTIME/models/4stems/.probe'
+          $root = 'P01_PRIVATE_BUNDLE/PDRM_P01_Private_Calibration/PDRM_OBSERVER_RUNTIME'
+          $probe = "$root/models/4stems/.probe"
           if (!(Test-Path -LiteralPath $probe -PathType Leaf)) { throw 'offline model .probe missing before upload' }
           if ((Get-Content -LiteralPath $probe -Raw).Trim() -ne 'PDRM_OFFLINE_OK') { throw 'offline model .probe content mismatch' }
+          $sidecars = @(Get-ChildItem -LiteralPath "$root/models/4stems" -Recurse -File | Where-Object { $_.Name -like '._*' })
+          if ($sidecars.Count -ne 0) { throw ('AppleDouble metadata leaked into distributable model: ' + ($sidecars.FullName -join ', ')) }
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -75,3 +78,44 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
           include-hidden-files: true
+
+  artifact-roundtrip:
+    needs: windows-bundle
+    runs-on: windows-2022
+    timeout-minutes: 35
+    env:
+      PYTHONUTF8: '1'
+      TF_CPP_MIN_LOG_LEVEL: '2'
+      OMP_NUM_THREADS: '2'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pdrm-P01-private-calibration-bundle
+          path: 'roundtrip_日本語 空白'
+      - name: Verify downloaded artifact and run worker self-test
+        shell: pwsh
+        run: |
+          $root = Join-Path $PWD 'roundtrip_日本語 空白'
+          $runtime = Join-Path $root 'PDRM_OBSERVER_RUNTIME'
+          $probe = Join-Path $runtime 'models/4stems/.probe'
+          if (!(Test-Path -LiteralPath $probe -PathType Leaf)) { throw 'artifact roundtrip lost offline model .probe' }
+          $sidecars = @(Get-ChildItem -LiteralPath (Join-Path $runtime 'models/4stems') -Recurse -File | Where-Object { $_.Name -like '._*' })
+          if ($sidecars.Count -ne 0) { throw ('artifact roundtrip contains AppleDouble metadata: ' + ($sidecars.FullName -join ', ')) }
+          & (Join-Path $runtime 'python.exe') -I (Join-Path $runtime 'observer_worker_spleeter_v47.py') --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'artifact worker self-test failed' }
+      - name: Execute frozen full private-calibration self-test after artifact roundtrip
+        shell: pwsh
+        run: |
+          $root = Join-Path $PWD 'roundtrip_日本語 空白'
+          $out = Join-Path $PWD 'roundtrip_evidence'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          & (Join-Path $root 'PDRM_P01_Calibrate.exe') --self-test --self-test-output $out
+          if ($LASTEXITCODE -ne 0) { throw 'artifact frozen full self-test failed' }
+          Get-Content -LiteralPath (Join-Path $out 'P01_BUNDLE_SELFTEST.json') -Raw
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-P01-artifact-roundtrip-evidence
+          path: roundtrip_evidence
+          if-no-files-found: warn
+          retention-days: 30

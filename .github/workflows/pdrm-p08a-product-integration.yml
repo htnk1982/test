@@ -1,0 +1,74 @@
+name: PDRM P08-A Product Integration
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/product_processed_v52.py'
+      - 'PDRM_Local_Render_Engine_v1/product_gui_runtime_v52.py'
+      - 'PDRM_Local_Render_Engine_v1/product_worker_v52.py'
+      - 'PDRM_Local_Render_Engine_v1/product_app_v52.py'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_product_v52.py'
+      - 'PDRM_Local_Render_Engine_v1/packaging/verify_product_v52.py'
+      - 'PDRM_Local_Render_Engine_v1/automatic_joint_v51.py'
+      - 'PDRM_Local_Render_Engine_v1/spleeter_observer_adapter_v48.py'
+      - 'PDRM_Local_Render_Engine_v1/observer_worker_spleeter_v47.py'
+      - 'PDRM_Local_Render_Engine_v1/observer_runtime_client_v47.py'
+      - 'PDRM_Local_Render_Engine_v1/packaging/build_spleeter_capsule_v47.py'
+      - '.github/workflows/pdrm-p08a-product-integration.yml'
+permissions:
+  contents: read
+jobs:
+  product-integration:
+    runs-on: windows-2022
+    timeout-minutes: 70
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      PYTHONUTF8: '1'
+      TF_CPP_MIN_LOG_LEVEL: '2'
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - name: Preserve source bytes
+        working-directory: .
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Builder Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build accepted isolated Spleeter runtime
+        run: python packaging/build_spleeter_capsule_v47.py
+      - name: Main PDRM Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install existing main-runtime dependencies
+        run: python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1 pyloudnorm==0.2.0 imageio-ffmpeg==0.6.0 psutil==7.0.0
+      - name: Sealed product request regressions
+        run: python -m unittest -v tests.test_product_v52
+      - name: Real isolated Spleeter through v51 product worker and P07 publisher
+        run: python packaging/verify_product_v52.py --runtime P02_CAPSULE_WORK/PDRM_OBSERVER_RUNTIME
+      - name: Assert P08-A evidence
+        shell: pwsh
+        run: |
+          $e = Get-Content -LiteralPath 'P08A_EVIDENCE/P08A_PRODUCT_INTEGRATION.json' -Raw | ConvertFrom-Json
+          if (!$e.success) { throw 'P08-A success=false' }
+          if ($e.planner_id -ne 'automatic-joint-lab-0.4.0') { throw ('planner changed: ' + $e.planner_id) }
+          if ($e.observer_provider -ne 'spleeter_runtime48') { throw ('observer changed: ' + $e.observer_provider) }
+          if ($e.render_backend -ne 'joint-v46' -or $e.finalizer -ne 'auto-peak-v3.4.0') { throw 'accepted renderer/finalizer identity changed' }
+          if (!$e.source_unchanged -or $e.stem_audio_in_master) { throw 'audio safety invariant failed' }
+          if ($e.private_audio -or $e.canonical_reference_used) { throw 'private/canonical audio must not enter public CI' }
+          if ($e.batch_files -ne 2) { throw 'batch product path not exercised' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-P08A-product-integration-evidence
+          path: PDRM_Local_Render_Engine_v1/P08A_EVIDENCE
+          if-no-files-found: warn
+          retention-days: 30

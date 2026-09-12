@@ -52,6 +52,12 @@ jobs:
         run: python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1 pyloudnorm==0.2.0 imageio-ffmpeg==0.6.0 psutil==7.0.0 pyinstaller==6.16.0
       - name: Build and execute frozen private-calibration self-test
         run: python packaging/build_p01_private_calibration_bundle.py
+      - name: Assert offline probe exists before artifact packaging
+        shell: pwsh
+        run: |
+          $probe = 'P01_PRIVATE_BUNDLE/PDRM_P01_Private_Calibration/PDRM_OBSERVER_RUNTIME/models/4stems/.probe'
+          if (!(Test-Path -LiteralPath $probe -PathType Leaf)) { throw 'offline model .probe missing before upload' }
+          if ((Get-Content -LiteralPath $probe -Raw).Trim() -ne 'PDRM_OFFLINE_OK') { throw 'offline model .probe content mismatch' }
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -60,6 +66,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 9
+          include-hidden-files: true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -67,3 +74,4 @@ jobs:
           path: PDRM_Local_Render_Engine_v1/P01_PRIVATE_BUNDLE_EVIDENCE
           if-no-files-found: warn
           retention-days: 30
+          include-hidden-files: true

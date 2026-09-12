@@ -91,7 +91,16 @@ def gui():
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser();p.add_argument('--worker-manifest',type=Path);a=p.parse_args(argv)
+    p=argparse.ArgumentParser();p.add_argument('--worker-manifest',type=Path)
+    p.add_argument('--self-test',action='store_true');p.add_argument('--self-test-output',type=Path)
+    a=p.parse_args(argv)
+    if a.self_test:
+        if a.worker_manifest or not a.self_test_output:
+            raise SystemExit('--self-test requires --self-test-output and no worker manifest')
+        from product_selftest_v52 import self_test
+        import json
+        print(json.dumps(self_test(a.self_test_output),ensure_ascii=True),flush=True)
+        return 0
     if a.worker_manifest:
         result=worker.run_manifest(a.worker_manifest)
         return 0 if result['overall'] in ('COMPLETE','COMPLETE_WITH_ERRORS','CANCELLED') else 1

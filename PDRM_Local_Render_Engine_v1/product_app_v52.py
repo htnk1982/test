@@ -7,7 +7,7 @@ release remains gated by P08 Frozen/roundtrip/private acceptance.
 """
 from __future__ import annotations
 from pathlib import Path
-import argparse,os,subprocess,sys,uuid
+import argparse,hashlib,json,os,subprocess,sys,traceback,uuid
 
 import gui_runtime_v44 as gui44
 import natural_gui_v34 as targets_gui
@@ -90,6 +90,42 @@ def gui():
     return 0
 
 
+def _file_diag(path):
+    p=Path(path)
+    row=dict(path=str(p),exists=p.is_file())
+    if p.is_file():
+        row['bytes']=p.stat().st_size
+        h=hashlib.sha256()
+        with p.open('rb') as f:
+            for block in iter(lambda:f.read(2**20),b''):h.update(block)
+        row['sha256']=h.hexdigest()
+    return row
+
+
+def _selftest_failure(output,exc):
+    out=Path(output);out.mkdir(parents=True,exist_ok=True)
+    frozen=bool(getattr(sys,'frozen',False))
+    bundle=Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent
+    failure=dict(
+        success=False,version=VERSION,error_type=type(exc).__name__,error=str(exc),repr=repr(exc),
+        traceback=traceback.format_exc(),frozen=frozen,executable=str(Path(sys.executable).resolve()),
+        cwd=str(Path.cwd()),bundle_root=str(bundle),observer_runtime=str(worker.runtime_root()),
+        observer_runtime_exists=worker.runtime_root().is_dir(),
+    )
+    try:
+        import imageio_ffmpeg
+        ff=Path(imageio_ffmpeg.get_ffmpeg_exe()).resolve()
+        failure['ffmpeg']=_file_diag(ff)
+    except Exception as diag_exc:
+        failure['ffmpeg_diagnostic_error']=repr(diag_exc)
+    for name in ('product_app_v52.py','product_worker_v52.py','product_selftest_v52.py','p01_private_calibration_entry.py'):
+        candidate=bundle/name
+        failure.setdefault('bundled_python_sources',{})[name]=_file_diag(candidate)
+    (out/'P08_PRODUCT_SELFTEST_FAILURE.json').write_text(
+        json.dumps(failure,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+    return failure
+
+
 def main(argv=None):
     p=argparse.ArgumentParser();p.add_argument('--worker-manifest',type=Path)
     p.add_argument('--self-test',action='store_true');p.add_argument('--self-test-output',type=Path)
@@ -97,10 +133,13 @@ def main(argv=None):
     if a.self_test:
         if a.worker_manifest or not a.self_test_output:
             raise SystemExit('--self-test requires --self-test-output and no worker manifest')
-        from product_selftest_v52 import self_test
-        import json
-        print(json.dumps(self_test(a.self_test_output),ensure_ascii=True),flush=True)
-        return 0
+        try:
+            from product_selftest_v52 import self_test
+            print(json.dumps(self_test(a.self_test_output),ensure_ascii=True),flush=True)
+            return 0
+        except Exception as exc:
+            _selftest_failure(a.self_test_output,exc)
+            return 90
     if a.worker_manifest:
         result=worker.run_manifest(a.worker_manifest)
         return 0 if result['overall'] in ('COMPLETE','COMPLETE_WITH_ERRORS','CANCELLED') else 1

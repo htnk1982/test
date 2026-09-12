@@ -12,6 +12,7 @@ import p01_private_calibration_entry_v51 as core
 # validation/decode/provenance implementation itself remains unchanged.
 legacy.core=core
 core._reference_files=legacy._reference_files
+_legacy_self_test=legacy.self_test
 
 VERSION='p01-reference-compat-v51-0.1.0'
 calibrate=legacy.calibrate
@@ -20,7 +21,7 @@ gui=legacy.gui
 
 
 def self_test(dest):
-    summary=legacy.self_test(dest)
+    summary=_legacy_self_test(dest)
     summary['bootstrap_version']=VERSION
     summary['planner_implementation']=planner51.VERSION
     path=Path(dest).resolve()/'P01_BUNDLE_SELFTEST.json'

@@ -3,8 +3,8 @@
 This is the only bridge from the Python 3.12 mastering process to the packaged
 Python 3.11/TensorFlow observer. It returns the existing role-observer schema;
 no stem sample crosses this boundary and no TensorFlow import occurs here.
-The runtime is deployable, while its current evidence scope remains LAB/research
-until private-audio calibration and product acceptance are completed.
+A single persistent worker is lazily created and reused across observation
+windows so TensorFlow/Spleeter model initialization is not repeated per window.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -12,7 +12,7 @@ import json
 import observer_runtime_client_v47 as client
 from integration_contract_v40 import digest,file_hash
 
-VERSION='spleeter-observer-adapter-0.1.1'
+VERSION='spleeter-observer-adapter-0.2.0'
 PROVIDER='spleeter_runtime48'
 EXPECTED_MODEL_ASSET_SHA256='3adb4a50ad4eb18c7c4d65fcf4cf2367a07d48408a5eb7d03cd20067429dfaa8'
 ROLE_SCHEMA='role-observer-0.2.0'
@@ -20,7 +20,7 @@ ROLE_SCHEMA='role-observer-0.2.0'
 
 class SpleeterRuntimeObserver:
     def __init__(self,runtime,*,timeout=240,work_root=None):
-        self.runtime=Path(runtime).absolute();self.timeout=timeout;self.work_root=None if work_root is None else Path(work_root).absolute();self._identity=None
+        self.runtime=Path(runtime).absolute();self.timeout=timeout;self.work_root=None if work_root is None else Path(work_root).absolute();self._identity=None;self._session=None
 
     def _inspect(self):
         runtime,python,worker,manifest=client.runtime_identity(self.runtime)
@@ -38,7 +38,8 @@ class SpleeterRuntimeObserver:
             model='SPLEETER_4STEMS_V1_4_0',model_asset_sha256=manifest['model_asset_sha256'],runtime_manifest_sha256=manifest['sha256'],worker_sha256=manifest['worker_sha256'],
             worker_version=manifest['worker_version'],packages=manifest['packages'],preprocessing_sha256=digest(pp),
             client_sha256=file_hash(Path(__file__).with_name('observer_runtime_client_v47.py')),adapter_sha256=file_hash(__file__),
-            stem_audio_in_master=False,runtime_model_download=False,private_audio_calibrated=False,product_release=False)
+            stem_audio_in_master=False,runtime_model_download=False,private_audio_calibrated=False,product_release=False,
+            worker_lifetime='PERSISTENT_PER_OBSERVER_INSTANCE')
         return identity
 
     def identity(self):
@@ -54,9 +55,15 @@ class SpleeterRuntimeObserver:
             if self.work_root.is_symlink():raise ValueError('Linked observer work root refused')
         self.identity();return self
 
+    def _persistent(self):
+        self.preflight()
+        if self._session is None:
+            self._session=client.PersistentObserverSession(self.runtime,work_root=self.work_root,timeout=self.timeout,startup_timeout=self.timeout)
+        return self._session
+
     def observe(self,source,start,end,progress=None):
-        self.preflight();before=self.identity()
-        arrays,raw=client.observe_dual(self.runtime,source,start,end,(1.,2.),work_root=self.work_root,timeout=self.timeout,progress=progress)
+        before=self.identity()
+        arrays,raw=self._persistent().observe_dual(source,start,end,(1.,2.),progress=progress)
         if raw.get('model_asset_sha256')!=before['model_asset_sha256'] or raw.get('runtime_manifest_sha256')!=before['runtime_manifest_sha256']:
             raise RuntimeError('Observer result came from another runtime/model')
         meta=dict(version=ROLE_SCHEMA,provider=PROVIDER,source_sha256=raw['source_sha256'],source_name=raw['source_name'],
@@ -64,5 +71,14 @@ class SpleeterRuntimeObserver:
             contexts_seconds=raw['contexts_seconds'],source_order=raw['source_order'],model='SPLEETER_4STEMS_V1_4_0',
             model_sha256=raw['model_asset_sha256'],runtime_manifest_sha256=raw['runtime_manifest_sha256'],worker_version=raw['worker_version'],
             probabilities_calibrated=False,output_audio_uses_stems=False,stem_audio_persisted=False,network_downloads_allowed=False,
-            preprocessing_sha256=before['preprocessing_sha256'],reconstruction_error_db=raw.get('reconstruction_error_db'))
+            preprocessing_sha256=before['preprocessing_sha256'],reconstruction_error_db=raw.get('reconstruction_error_db'),
+            persistent_session=True,worker_pid=raw.get('worker_pid'))
         return arrays,meta
+
+    def close(self):
+        if self._session is not None:
+            self._session.close();self._session=None
+
+    def __del__(self):
+        try:self.close()
+        except Exception:pass

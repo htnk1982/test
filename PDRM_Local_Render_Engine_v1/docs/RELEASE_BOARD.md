@@ -1,24 +1,93 @@
 # PDRM 更新EXE：課題台帳・進捗の正本
 
-更新：2026-09-12 / revision 5
+更新：2026-09-12 / revision 6
 repo：`htnk1982/test` / branch：`pdrm-note-sub-lab-v1`
 親Issue：#2。
 
 ## 現在地
 
-**P03-Aのsource-driven joint planner技術受入をDONE。P03親の残件はP01復旧後の私有実曲校正。**
-P02、P03-A、P04-A、P06-A、P07は技術条件を満たした。現在のクリティカルパスはP01の私有実曲実行基盤復旧→P03実曲校正→P05完成WAV/MP3選択→P08最終EXE受入。P01不通中もP08の容量圧縮など独立作業は進められるが、実曲の音楽的合格を代用しない。
+**P01の「ローカルTransport復旧待ち」を解消。自己完結Private Calibration Bundleが成立し、残件はユーザーPC上で私有実曲1件を実行・聴感することだけ。**
+
+P02、P03-A、P04-A、P06-A、P07は技術条件を満たした。現在のクリティカルパスは **P01私有実曲1件のローカル実行 → P03/P04実曲校正 → P05完成WAV/MP3選択 → P08最終EXE受入**。ChatGPT側のTransport復旧は今後の依存条件ではない。
 
 | ID | 状態 | 残ること |
 |---|---|---|
-| P01 私有実音源・レビュー実行基盤 | **BLOCKED #3** | ローカル実行環境の復旧→既存音源manifest→実曲1件 |
+| P01 私有実音源・レビュー実行基盤 | **READY FOR LOCAL RUN #3** | Private Calibration Bundleで`11 - Traces`を1件実行し、manifest＋最小聴感を回収 |
 | P02 配布用observer | **DONE #8** | 製品EXEへの配置と容量最適化はP08。私有音源での音楽校正はP03/P05 |
-| P03 発音・役割・必要量の自動判断 | **PARTIAL：P03-A DONE #10 / P01待ち** | 08/11/12・reference/before/afterへ同じplannerを適用し、本人レビューで量を校正 |
+| P03 発音・役割・必要量の自動判断 | **PARTIAL：P03-A DONE #10 / 実曲待ち** | まず11、次に06→12へ同じplannerを適用し、本人レビューで量を校正 |
 | P04 加算・広域/狭帯域統合 | **PARTIAL：P04-A DONE #9 + P03-A接続DONE** | 私有実曲で共同予算・聴感を確認後に親を閉じる |
 | P05 完成WAV/MP3での候補選択・実曲回帰 | WAITING | P01/P03実曲校正後。OPPO/limiter経路変化込みで判定 |
 | P06 GUI/進捗/キャンセル | **P06-A DONE #6** | product-release runtimeの解禁はP03/P08 |
 | P07 保存・退避・復旧・多曲/掃除 | **DONE** | A #4 / B #5 / C #7 完了 |
 | P08 製品Windows EXEと最終受入 | WAITING | 実モデルruntime配置、容量圧縮、実曲、GUI、保存を版/hash固定EXEで完走 |
+
+## P01ボトルネック再定義と解消
+
+### 問いの変形
+旧P01は「ChatGPTローカル実行の`TransportTimeoutError`を復旧する」が事実上のクリティカルパスになっていた。しかし目的はTransportを直すことではない。必要なのは、**確定したP03-Aを、私有音源を外部へ出さずユーザーPC上で実行し、版・hash・planner判断・完成音・聴感を回収できること**である。
+
+この目的へ戻し、Transportを依存関係から除去した。公開CIは実行器だけを生成し、私有source/referenceはユーザーPCでのみ読み込む。
+
+### Private Calibration Bundle
+実装commit列：
+- `ca613c9874560441e68d786ebe67da0dbc70b4f4` — private calibration runner
+- `feb21b9d0f08c3d10774f42843d987509699db32` — self-contained bundle builder
+- `1894c814d93e8ddf89739d4b76ae27e86f3e2419` — Windows workflow
+- `182e066ab34cc12372dba03b69ba547aeb4bde3b` — source/output分離＋`reference.zip`実経路self-test
+
+構成：
+- 主処理：Frozen Windows EXE。ユーザーPython不要。
+- observer：兄弟ディレクトリの内蔵CPython3.11.9 + Spleeter2.4.2 + TensorFlow2.12.1隔離runtime。
+- P03-A baseline：`50a4592e45b3f810e905041c25cff1c3e35b2a88`。
+- source：WAV/FLACをユーザーPCで選択。
+- reference：既存`reference.zip`をユーザーPCで選択。bundleへ音源を同梱しない。
+- output：sourceフォルダ外のみ。既存結果上書き禁止。
+- 出力：`MASTER.wav` / `LISTEN_320kbps.mp3` / `CALIBRATION_MANIFEST.json` / `REVIEW.md`ほか。
+- private audioをGitHub/CIへ送るコード経路を持たない。stem音声を保存・完成音へ混入しない。
+
+### Frozen自己試験
+最終CI run `34682265217` / Windows job `103522952660` success。
+
+生成fixture 4本を`reference.zip`化し、日本語/空白path相当のFrozen EXEから、**reference ZIP読込 → calibration → 実Spleeter隔離runtime → P03-A → MASTER.wav / MP3**まで完走。
+
+自己試験結果：
+- `frozen=true`
+- `source_unchanged=true`
+- `reference_zip_exercised=true`
+- `accepted_additions=1`
+- `observer_provider=spleeter_runtime48`
+- `stem_audio_in_master=false`
+- `private_audio=false`
+- `user_python_required=false`
+- `product_release=false`
+
+主EXE SHA256：`298cc29f8d3834ae7789122c329574330a9bd10075be9da1e7219b95749774b5`。
+展開bundle：2,154,675,475 bytes。うちobserver runtime 1,925,110,546 bytes。圧縮artifact 745,923,979 bytes。
+
+成果物：
+- bundle artifact ID `10294875294`, ZIP SHA256 `41dc173c37d4a32a9decfbaec385644ca860c23516b0cf11184441c03ce6bb46`
+- evidence artifact ID `10293344807`, ZIP SHA256 `6325e72aa031c4c743803b79deb99fc66dbe4f376c1e235e503925cffeaf0fce`
+- run `34682265217`
+
+初回run `34682007702`は、self-testでsourceとoutputを同じ親へ置いたため「source folder配下へ結果を書かない」安全ゲートが拒否した。安全条件は外さず、self-testを本番同様に別領域へ修正して再実行した。
+
+### 私有資産の再発見
+既存資産を再アップロード・再ラベルせず確認済み：
+- 元WAV：06 / 11 / 12
+- `reference.zip`：24本
+- `before.zip` / `after.zip`：各21本（08/11/12を含む）
+
+公開GitHub/CIへこれらの音声は送っていない。
+
+### 最初の実曲
+第一候補を`11 - Traces_demo_44k (delimit).wav`とする。私有環境内の事前スキャンで約155秒付近に、約55Hz・高periodicity・基音が上位倍音に対して非常に弱い候補が複数あり、P03-Aで修正したweak-but-present same-f0の実曲検証として情報利得が最も高い。
+
+06は30Hz台の境界/octave論点が混ざりやすく、12は候補が少ないため、順序は **11 → 06 → 12** とする。
+
+### P01を閉じる残り1条件
+ユーザーPC上でbundleを用い、11を元音源非破壊で1件完走する。返す情報は音源ではなく`CALIBRATION_MANIFEST.json`と、聴感の **改善 / 過剰 / 不足 / 違和感あり（時刻）** のいずれかでよい。
+
+これが通るまでP01をDONEにはしない。
 
 ## P03-Aを閉じた根拠
 
@@ -37,8 +106,6 @@ CI run `34680941299`。
 - manual event times：false
 - private music：false
 
-追加回帰では、role support約80%、pitch support約80%、両者のframewise intersection約60%という非重複jitterを作り、独立event-level証拠が成立する場合のみ許可することを固定した。既存のkick/vocal/octave-down/rest等の拒否回帰も維持。
-
 ### Windows実Spleeter full-chain
 CI run `34680941252` / job `103519335096` success。内蔵CPython3.11.9 + Spleeter2.4.2 + TensorFlow2.12.1の隔離runtimeを主PDRM Python3.12から呼び出した。
 
@@ -54,40 +121,23 @@ CI run `34680941252` / job `103519335096` success。内蔵CPython3.11.9 + Spleet
 - private audio使用なし
 - WAV/MP3まで完走
 
-この受入はP03-Aの技術成立を証明するが、本人の私有実曲に対する音楽的適合・最終量校正は評価していない。そこはP01復旧後のP03/P05に残す。
+この受入はP03-Aの技術成立を証明するが、本人の私有実曲に対する音楽的適合・最終量校正は評価していない。
 
 ## P02を閉じた根拠
 
-### 公式asset・Windows実推論
 Deezer Spleeter v1.4.0 `4stems.tar.gz`を公式checksumで固定。asset SHA256 `3adb4a50ad4eb18c7c4d65fcf4cf2367a07d48408a5eb7d03cd20067429dfaa8`。Windows Server 2022 / Ubuntuで44.1kHz `vocals/drums/bass/other`のローカル推論に成功。
 
-### Python/TensorFlowを利用者に要求しない隔離runtime
-主PDRM Python3.12/Numpy2系から、内蔵CPython3.11.9 + Spleeter2.4.2 + TensorFlow2.12.1を別processで起動。日本語/空白pathから2回連続推論し、`sys.executable`/`sys.prefix`が同梱runtime内であること、元音源hash不変、stem WAV非保存、完成音へstem非混入、曲処理時model download禁止、一時IPC清掃を確認。
+runtime manifest SHA256 `f97c83aa0619b5c315d1ae54b13fa300e7e35043dd241a1e67a8108060d3d874`。CI run `34622532092` / Windows job `103339719885` success。未圧縮runtimeは1,925,110,546 bytes / 24,767 files。容量最適化はP08へ残す。
 
-runtime manifest SHA256 `f97c83aa0619b5c315d1ae54b13fa300e7e35043dd241a1e67a8108060d3d874`。CI run `34622532092` / Windows job `103339719885` success。証拠artifact ID `10273107830`、ZIP SHA256 `ff5d9566adb8f1c8aa7ee7743cc54211772a6c403dec4bff181e28be9e393c4a`。runtime本体/model重みはartifactへ保存していない。
-
-未圧縮runtimeは1,925,110,546 bytes / 24,767 files。これは最終配布には大きいためP08で依存削減/配布圧縮を行う。ただし、hostへのPython/TensorFlow導入不要・offline local推論というP02の機能条件は満たした。
-
-### PDRM用途のrole safety比較
-初回比較は低い歌声fixtureを正しく`vocals` stemへ分類できることを要求し、Spleeter/HDEMUCSとも失敗した。この条件はPDRMの操作許可と一致しないため、その失敗を消さず、2回目は既存PDRMの実permission gateそのものを使用した。
-
-最終比較CI run `34623196785` / job `103341899355` success。生成counterexample 4種：
-- bass_event：低域減算を許可し、同一基音55Hz補強も許可
-- kick_only：drum由来低域減算は許可するが、bass同一基音補強は拒否
-- vocal_low：低域減算・counterfactual 55Hz補強を拒否、165→55Hz octave-downも拒否
-- rest_gap：左右のbass eventを許可し、中央休符の低域操作許可0
-
-Spleeter 4/4、HDEMUCS research baseline 3/4。vocal_lowでHDEMUCSはbassとして広域減算を1.0許可しcounterfactual 55Hz補強も許可した一方、Spleeterは対象を主に`other`へ割当て、PDRMの広域減算許可0、同一基音補強も拒否した。これは一般的source-separation優越性や私有実曲精度の証明ではなく、PDRMの操作安全counterexampleに対する結果。
-
-比較artifact ID `10272729312`、ZIP SHA256 `571e3a7b36c8c4997132bf0f951a24e471db5b47a96a1c5e37f912744cc5bc40`。HDEMUCS checkpointはCI終了前に削除し配布物へ含めていない。
+PDRM permission gateによるcounterexample比較はSpleeter 4/4、HDEMUCS research baseline 3/4。これは一般的source-separation優越性や私有実曲精度の証明ではなく、PDRM操作安全の限定結果である。
 
 ## 次の主タスク
 
-1. **P01復旧がクリティカルパス。** 私有実曲を公開GitHub/CIへ送らず、ローカル実行環境を復旧する。
-2. P01復旧後、既存08/11/12・reference/before/after・レビューへP03-A plannerをそのまま適用する。
-3. 実曲で、広域減算・same-f0補強・既存HE/HFTC/OPPOを含む完成WAV/MP3を比較し、必要量と発動タイミングを校正する。
-4. その結果でP03/P04親を閉じ、P05候補選択へ進む。
-5. P01不通中は、P08のruntime容量圧縮など実曲評価と独立な作業だけを進めてよい。
+1. **P01 final local acceptance**：Private Calibration Bundleで`11 - Traces`をユーザーPC上で実行。
+2. `CALIBRATION_MANIFEST.json`と最小聴感を基に、P03の量・発動タイミングを校正。
+3. その結果を06→12へ拡張し、P03/P04親を閉じる。
+4. P05でOPPO/limiter後の完成WAV/MP3候補順位を判定。
+5. P08で製品版runtime容量圧縮、GUI、保存、実曲、版/hash固定EXEを最終受入。
 
 ## 完了を偽らない運転規則
 
@@ -97,3 +147,4 @@ Spleeter 4/4、HDEMUCS research baseline 3/4。vocal_lowでHDEMUCSはbassとし�
 - 私有音源を公開GitHub/CIへ送ってP01を迂回しない。
 - 新しい判断器は、どの既存課題を閉じるかを明示してから実装する。
 - 合成/CI成功を本人の音楽的合格の代用にしない。
+- P01のbundle容量最適化を、P01の実曲受入より先に行わない。容量最適化はP08で扱う。

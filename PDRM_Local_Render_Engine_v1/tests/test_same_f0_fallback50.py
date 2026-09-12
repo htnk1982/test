@@ -53,6 +53,20 @@ class SameF0Fallback(unittest.TestCase):
         old=legacy.permit(event(),arr,meta,source_sha);self.assertFalse(old['allowed'],old);self.assertEqual(old['reason_codes'],['ABSTAIN_LOCAL_ROLE_OR_PITCH'])
         d=permission.permit(event(),arr,meta,source_sha,proof,shape)
         self.assertTrue(d['allowed'],d);self.assertEqual(d['permission_path'],'EXISTING_WEAK_F0_FALLBACK');self.assertEqual(d['envelope_role_indices'],[2,3]);self.assertLess(d['fallback_drum_share_q80'],.5)
+    def test_role_and_pitch_are_independent_event_evidence(self):
+        p,proof,shape,arr,meta=self.evidence('weak');source_sha=capture(p).file_sha256
+        t=np.asarray(arr['time']);keep=np.flatnonzero((t>=2.25)&(t<4.90));k=max(1,len(keep)//5)
+        # Pitch evidence fails on the first fifth; role evidence fails on a disjoint
+        # final fifth. Each event-level gate still has >=75% support while their
+        # same-frame intersection is intentionally below 75%.
+        arr['bass_f0_hz'][:,keep[:k]]=0.;arr['bass_periodicity'][:,keep[:k]]=0.
+        arr['low_power'][:,keep[-k:],1]=.20;arr['body_power'][:,keep[-k:],1]=.20
+        d=permission.permit(event(),arr,meta,source_sha,proof,shape)
+        self.assertTrue(d['allowed'],d)
+        self.assertGreaterEqual(d['fallback_role_supported_fraction'],.75)
+        self.assertGreaterEqual(d['fallback_pitch_supported_fraction'],.75)
+        self.assertLess(d['fallback_joint_supported_fraction'],.75)
+        self.assertGreaterEqual(d['fallback_render_supported_fraction'],.75)
     def test_deep_voice_legacy_allow_is_overridden_by_source_veto(self):
         p,proof,shape,arr,meta=self.evidence('voice');source_sha=capture(p).file_sha256
         old=legacy.permit(event(),arr,meta,source_sha);self.assertTrue(old['allowed'],old)

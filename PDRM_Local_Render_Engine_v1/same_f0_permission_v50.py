@@ -4,8 +4,8 @@ Every repair must prove an already-present *weak* f0 in the original 2mix and
 pass a source spectral-brightness veto. Legacy strict bass permission remains
 preferred. If Spleeter swaps a sustained low event among drums/bass/other across
 contexts, a fallback may act only when the event is non-vocal, not drum-dominant,
-and bass-pitch/periodicity evidence remains stable. This is intentionally about
-safe low-f0 actuation, not exact semantic stem naming.
+and bass-pitch/periodicity evidence remains stable. Role and pitch are independent
+event evidence; their framewise intersection is diagnostic, not a hard gate.
 """
 from __future__ import annotations
 from dataclasses import dataclass, asdict
@@ -13,7 +13,7 @@ import math
 import numpy as np
 import event_groove_v37 as legacy
 
-VERSION = 'same-f0-permission-lab-0.3.1'
+VERSION = 'same-f0-permission-lab-0.4.0'
 
 
 @dataclass(frozen=True)
@@ -130,9 +130,6 @@ def permit(event, arrays, meta, source_digest, source_proof, source_shape, cfg=C
     period = np.asarray(arrays['bass_periodicity'], float)
     cents = np.abs(1200 * np.log2(np.maximum(pitch, 1e-12) / f0))
 
-    # Keep semantic role evidence and bass-stem pitch evidence separate here.
-    # The deployable observer can move the same physical tone between stems, so
-    # their intersection is not a faithful diagnostic of either gate alone.
     role_reliable = (
         (drums.max(axis=0) <= cfg.max_drum_share)
         & (vocals.max(axis=0) <= cfg.max_vocal_share)
@@ -143,18 +140,20 @@ def permit(event, arrays, meta, source_digest, source_proof, source_shape, cfg=C
         & (period.min(axis=0) >= cfg.min_periodicity)
     )
 
-    # Drum leakage may authorize context robustness but is never synthesized;
-    # the audible envelope still comes only from bass+other evidence.
+    # Drum leakage can be tolerated by the event-level role gate but is never
+    # synthesized. The audible envelope comes only from bass+other evidence.
     energy = (p[:, :, 2] + p[:, :, 3]).min(axis=0)
     peak = max(float(energy.max()), 1e-24)
     energy_reliable = energy > max(peak * 1e-4, 1e-12)
     role_energy_reliable = role_reliable & energy_reliable
-    reliable = role_energy_reliable & pitch_reliable
+    joint_reliable = role_energy_reliable & pitch_reliable
 
     role_fraction = float(np.mean(role_energy_reliable[keep])) if np.any(keep) else 0.
     pitch_fraction = float(np.mean(pitch_reliable[keep])) if np.any(keep) else 0.
-    fraction = float(np.mean(reliable[keep])) if np.any(keep) else 0.
-    if fraction < cfg.min_supported_fraction:
+    joint_fraction = float(np.mean(joint_reliable[keep])) if np.any(keep) else 0.
+    # Role and pitch independently corroborate one source-proven event. Requiring
+    # same-frame coincidence would double-count separator assignment jitter.
+    if role_fraction < cfg.min_supported_fraction or pitch_fraction < cfg.min_supported_fraction:
         reasons.append('ABSTAIN_FALLBACK_ROLE_OR_PITCH')
 
     out = dict(
@@ -167,9 +166,11 @@ def permit(event, arrays, meta, source_digest, source_proof, source_shape, cfg=C
         source_shape=source_shape,
         source_veto_reasons=source_reasons,
         envelope_role_indices=[2, 3],
-        fallback_supported_fraction=fraction,
+        fallback_supported_fraction=joint_fraction,
+        fallback_joint_supported_fraction=joint_fraction,
         fallback_role_supported_fraction=role_fraction,
         fallback_pitch_supported_fraction=pitch_fraction,
+        fallback_render_supported_fraction=role_fraction,
         fallback_bass_other_q20=float(np.percentile((bass + other).min(axis=0)[keep], 20)) if np.any(keep) else 0.,
         fallback_drum_share_q80=float(np.percentile(drums.max(axis=0)[keep], 80)) if np.any(keep) else 1.,
         fallback_vocal_share_q80=float(np.percentile(vocals.max(axis=0)[keep], 80)) if np.any(keep) else 1.,
@@ -177,5 +178,5 @@ def permit(event, arrays, meta, source_digest, source_proof, source_shape, cfg=C
     )
     if out['allowed']:
         out['render_support_times'] = t[keep].tolist()
-        out['render_support_mask'] = reliable[keep].astype(int).tolist()
+        out['render_support_mask'] = role_energy_reliable[keep].astype(int).tolist()
     return out

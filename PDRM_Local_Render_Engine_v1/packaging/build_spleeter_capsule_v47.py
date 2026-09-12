@@ -87,18 +87,29 @@ def main():
         download(SPLEETER_BASE+'/checksum.json',index);download(SPLEETER_BASE+'/'+MODEL_ASSET,asset)
         checks=json.loads(index.read_text(encoding='utf-8'));expected=checks.get('4stems');actual=sha(asset)
         if not isinstance(expected,str) or expected!=actual:raise RuntimeError('Official Spleeter model archive checksum mismatch')
-        model=runtime/'models'/'4stems';model.mkdir(parents=True);safe_tar(asset,model);(model/'.probe').write_text('PDRM_OFFLINE_OK\n',encoding='utf-8')
+        model=runtime/'models'/'4stems';model.mkdir(parents=True);safe_tar(asset,model)
+        # The official v1.4.0 archive contains macOS AppleDouble sidecars such as
+        # ._checkpoint. They are not TensorFlow model components and may be
+        # rewritten by NAS/filesystem tooling, so never package or attest them.
+        ignored_metadata=[]
+        for p in sorted(model.rglob('._*')):
+            if p.is_file():
+                ignored_metadata.append(str(p.relative_to(model)).replace('\\','/'));p.unlink()
+        (model/'.probe').write_text('PDRM_OFFLINE_OK\n',encoding='utf-8')
     worker_source=ROOT/'observer_worker_spleeter_v47.py';worker=runtime/worker_source.name;shutil.copyfile(worker_source,worker)
     python=runtime/'python.exe';versions=package_versions(python,runtime)
     if versions['spleeter']!='2.4.2' or versions['tensorflow']!='2.12.1' or versions['tensorflow-io-gcs-filesystem']!='0.31.0':raise RuntimeError('Unexpected isolated dependency versions '+repr(versions))
+    required_model_files=('checkpoint','model.data-00000-of-00001','model.index','model.meta')
+    if any(not (model/name).is_file() for name in required_model_files):raise RuntimeError('Required Spleeter model file missing')
     model_files={}
     for p in sorted(model.rglob('*')):
-        if p.is_file() and p.name!='.probe':model_files[str(p.relative_to(model)).replace('\\','/')]=dict(sha256=sha(p),bytes=p.stat().st_size)
+        if p.is_file() and p.name!='.probe' and not p.name.startswith('._'):
+            model_files[str(p.relative_to(model)).replace('\\','/')]=dict(sha256=sha(p),bytes=p.stat().st_size)
     if not model_files:raise RuntimeError('No packaged model files')
     manifest=dict(schema=1,runtime='CPython-embed-win_amd64',python_version=PYTHON_VERSION,python_embed_url=PYTHON_URL,python_embed_sha256=sha(out/'PDRM_OBSERVER_RUNTIME'/'python311.zip'),
         worker_version='spleeter-observer-worker-0.1.0',worker_sha256=sha(worker),spleeter_release=SPLEETER_RELEASE,
         model_asset=MODEL_ASSET,model_asset_url=SPLEETER_BASE+'/'+MODEL_ASSET,model_asset_sha256=actual,
-        model_files=model_files,packages=versions,source_order=['mix','drums','bass','other','vocals'],
+        model_files=model_files,ignored_archive_metadata=ignored_metadata,packages=versions,source_order=['mix','drums','bass','other','vocals'],
         preprocessing=dict(separator_rate_hz=44100,feature_rate_hz=12000,feature_hop_samples=120,feature_window_samples=720,
             bands_hz=dict(low=[25,120],body=[120,300],focus=[300,450],upper_focus=[450,700]),contexts_required=2,max_core_seconds=16,max_pad_seconds=4),
         offline_policy=dict(model_download_at_runtime=False,stem_audio_persisted=False,stem_audio_in_master=False),
@@ -107,7 +118,7 @@ def main():
     manifest['sha256']=digest(manifest);(runtime/'PDRM_OBSERVER_RUNTIME_MANIFEST.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     selftest=subprocess.check_output([str(python),'-I',str(worker),'--self-test'],cwd=runtime,text=True,encoding='utf-8',stderr=subprocess.STDOUT)
     result=dict(success=True,runtime_dir=str(runtime),runtime_bytes=sum(p.stat().st_size for p in runtime.rglob('*') if p.is_file()),file_count=sum(1 for p in runtime.rglob('*') if p.is_file()),
-        manifest_sha256=manifest['sha256'],model_asset_sha256=actual,worker_sha256=manifest['worker_sha256'],versions=versions,selftest=selftest.strip(),host_python=sys.version)
+        manifest_sha256=manifest['sha256'],model_asset_sha256=actual,worker_sha256=manifest['worker_sha256'],ignored_archive_metadata=ignored_metadata,versions=versions,selftest=selftest.strip(),host_python=sys.version)
     (out/'BUILD_RESULT.json').write_text(json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     print('P02_CAPSULE_BUILD '+json.dumps(result,ensure_ascii=True),flush=True)
 

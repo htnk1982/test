@@ -4,6 +4,7 @@ on:
     branches: [pdrm-note-sub-lab-v1]
     paths:
       - 'PDRM_Local_Render_Engine_v1/p01_private_calibration_entry.py'
+      - 'PDRM_Local_Render_Engine_v1/p01_private_calibration_bootstrap.py'
       - 'PDRM_Local_Render_Engine_v1/packaging/build_p01_private_calibration_bundle.py'
       - 'PDRM_Local_Render_Engine_v1/automatic_joint_v48.py'
       - 'PDRM_Local_Render_Engine_v1/automatic_joint_v49.py'

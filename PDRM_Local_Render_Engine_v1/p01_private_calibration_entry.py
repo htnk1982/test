@@ -7,7 +7,7 @@ a sibling isolated runtime and stem audio is never exported or mixed to output.
 from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import argparse, hashlib, json, os, shutil, sys, time, zipfile
+import argparse, json, os, shutil, subprocess, sys, time, traceback, zipfile
 
 import numpy as np
 import soundfile as sf
@@ -18,7 +18,7 @@ import integrated_finish_v40 as finish
 from integration_contract_v40 import capture, file_hash
 from target_settings import Targets
 
-VERSION = "p01-private-calibration-0.1.1"
+VERSION = "p01-private-calibration-0.1.2"
 ACCEPTED_P03A_COMMIT = "50a4592e45b3f810e905041c25cff1c3e35b2a88"
 AUDIO_EXTS = {".wav", ".flac", ".mp3", ".aif", ".aiff"}
 
@@ -66,10 +66,7 @@ def _reference_files(reference: Path, temp: Path):
 
 
 def _hash_manifest(paths):
-    return [
-        dict(name=p.name, sha256=file_hash(p), bytes=p.stat().st_size)
-        for p in paths
-    ]
+    return [dict(name=p.name, sha256=file_hash(p), bytes=p.stat().st_size) for p in paths]
 
 
 def _copy_verified(src: Path, dst: Path):
@@ -80,6 +77,27 @@ def _copy_verified(src: Path, dst: Path):
     if file_hash(src) != file_hash(dst):
         dst.unlink(missing_ok=True)
         raise RuntimeError("Copied result hash mismatch")
+
+
+def _failure_record(output, source, reference, exc):
+    output = Path(output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    def safe_hash(value):
+        try:
+            p=Path(value)
+            return file_hash(p) if p.is_file() else None
+        except Exception:
+            return None
+    record=dict(
+        schema=1,version=VERSION,accepted_p03a_commit=ACCEPTED_P03A_COMMIT,
+        error_type=type(exc).__name__,error=str(exc),traceback=traceback.format_exc(),
+        source_name=Path(source).name if source else None,source_sha256=safe_hash(source) if source else None,
+        reference_name=Path(reference).name if reference else None,reference_sha256=safe_hash(reference) if reference else None,
+        private_audio_embedded=False,product_release=False,
+    )
+    target=output/'P01_FAILURE.json'
+    target.write_text(json.dumps(record,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+    return target
 
 
 def calibrate(source, reference, output, *, targets=None):
@@ -143,7 +161,6 @@ def calibrate(source, reference, output, *, targets=None):
             requested_targets=report.get("requested_targets"),
             master_metrics=report.get("master_metrics"),
             codec_metrics=report.get("codec_metrics"),
-            outputs={p.name: file_hash(p) for p in final.iterdir() if p.is_file()},
             source_unchanged=True,
             private_audio_uploaded=False,
             stem_audio_exported=False,
@@ -151,14 +168,10 @@ def calibrate(source, reference, output, *, targets=None):
             subjective_quality="REQUIRES_LOCAL_LISTENING_REVIEW",
             product_release=False,
         )
-        (final / "CALIBRATION_MANIFEST.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8"
-        )
         (final / "REVIEW.md").write_text(
             "# PDRM P01 実曲レビュー\n\n"
             "これは製品版の合格判定ではなく、P03の量・発動タイミング校正用です。\n\n"
-            "## 聴く順序\n"
-            "1. 元音源\n2. `MASTER.wav`\n3. `LISTEN_320kbps.mp3`\n\n"
+            "## 聴く順序\n1. 元音源\n2. `MASTER.wav`\n3. `LISTEN_320kbps.mp3`\n\n"
             "## 記録すること\n"
             "- 低域が増減すべきでない場所で動いていないか\n"
             "- 低域の芯・重さが改善したか、過剰か、不足か\n"
@@ -196,26 +209,38 @@ def _fixture_source(sr=48000, seconds=7.):
     return np.column_stack((bass+bed,bass+.92*bed))
 
 
+def _encode_mp3(wav, mp3):
+    import imageio_ffmpeg
+    ffmpeg=imageio_ffmpeg.get_ffmpeg_exe()
+    command=[ffmpeg,'-nostdin','-hide_banner','-loglevel','error','-y','-i',str(wav),'-codec:a','libmp3lame','-b:a','320k',str(mp3)]
+    run=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=120)
+    if run.returncode or not mp3.is_file() or mp3.stat().st_size<1024:
+        raise RuntimeError('Generated MP3 reference failed: '+run.stdout[-4000:])
+
+
 def self_test(dest):
-    dest=Path(dest).resolve()
-    dest.mkdir(parents=True, exist_ok=True)
+    dest=Path(dest).resolve();dest.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="p01_selftest_source_") as source_td, TemporaryDirectory(prefix="p01_selftest_output_") as output_td:
-        root=Path(source_td);refs=root/"refs";refs.mkdir()
+        root=Path(source_td);refs=root/"refs";refs.mkdir();mp3s=[]
         for i in range(4):
-            sf.write(refs/f"ref{i}.wav", _fixture_reference(phase=.19*i,level=.105+.004*i), 48000, subtype="DOUBLE")
+            wav=refs/f"ref{i}.wav";mp3=refs/f"ref{i}.mp3"
+            sf.write(wav, _fixture_reference(phase=.19*i,level=.105+.004*i), 48000, subtype="DOUBLE")
+            _encode_mp3(wav,mp3);mp3s.append(mp3);wav.unlink()
+        # Prove the same decoder path used by the real 24-file MP3 reference ZIP.
+        for p in mp3s:
+            info=sf.info(p)
+            if info.frames<=0 or info.channels!=2:raise RuntimeError('Frozen MP3 decoder unavailable')
         reference_zip=root/"reference.zip"
         with zipfile.ZipFile(reference_zip,"w",compression=zipfile.ZIP_DEFLATED) as z:
-            for p in sorted(refs.glob("*.wav")):z.write(p,arcname="reference/"+p.name)
-        source=root/"private-like source.wav"
-        sf.write(source,_fixture_source(),48000,subtype="DOUBLE")
+            for p in mp3s:z.write(p,arcname="reference/"+p.name)
+        source=root/"private-like source.wav";sf.write(source,_fixture_source(),48000,subtype="DOUBLE")
         final,manifest=calibrate(source,reference_zip,Path(output_td))
         if not (final/"MASTER.wav").is_file() or not (final/"LISTEN_320kbps.mp3").is_file():
             raise RuntimeError("Self-test final audio missing")
         summary=dict(
             success=True, version=VERSION, accepted_p03a_commit=ACCEPTED_P03A_COMMIT,
-            frozen=bool(getattr(sys,"frozen",False)),
-            source_unchanged=manifest["source_unchanged"],
-            reference_zip_exercised=True,
+            frozen=bool(getattr(sys,"frozen",False)), source_unchanged=manifest["source_unchanged"],
+            reference_zip_exercised=True,reference_codec='mp3',reference_decoder_verified=True,
             accepted_additions=(manifest.get("planner_report") or {}).get("accepted_additions"),
             observer_provider=((manifest.get("planner_identity") or {}).get("observer") or {}).get("provider"),
             stem_audio_in_master=False, private_audio=False, product_release=False,
@@ -231,33 +256,35 @@ def gui():
     source=filedialog.askopenfilename(title="P01: 実曲WAV/FLACを選択",filetypes=[("Audio","*.wav *.flac")])
     if not source:return 2
     reference=filedialog.askopenfilename(title="P01: reference.zipを選択",filetypes=[("ZIP","*.zip")])
-    if not reference:
-        reference=filedialog.askdirectory(title="P01: 参照音源フォルダを選択")
+    if not reference:reference=filedialog.askdirectory(title="P01: 参照音源フォルダを選択")
     if not reference:return 2
     output=filedialog.askdirectory(title="P01: 結果保存先（元音源フォルダ以外）を選択")
     if not output:return 2
     try:
         final,_=calibrate(source,reference,output)
     except Exception as e:
-        messagebox.showerror("PDRM P01", f"処理に失敗しました。\n\n{type(e).__name__}: {e}")
+        try:failure=_failure_record(output,source,reference,e)
+        except Exception:failure=None
+        detail=f"\n\n診断: {failure}" if failure else ''
+        messagebox.showerror("PDRM P01", f"処理に失敗しました。\n\n{type(e).__name__}: {e}{detail}")
         return 1
-    messagebox.showinfo("PDRM P01", "完了しました。\n\n"+str(final))
-    return 0
+    messagebox.showinfo("PDRM P01", "完了しました。\n\n"+str(final));return 0
 
 
 def main():
-    ap=argparse.ArgumentParser()
-    ap.add_argument("--source");ap.add_argument("--reference");ap.add_argument("--output")
-    ap.add_argument("--self-test", action="store_true");ap.add_argument("--self-test-output")
-    args=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument("--source");ap.add_argument("--reference");ap.add_argument("--output")
+    ap.add_argument("--self-test", action="store_true");ap.add_argument("--self-test-output");args=ap.parse_args()
     if args.self_test:
         if not args.self_test_output:raise SystemExit("--self-test-output required")
         print(json.dumps(self_test(args.self_test_output),ensure_ascii=True),flush=True);return
     if args.source or args.reference or args.output:
         if not all((args.source,args.reference,args.output)):raise SystemExit("--source --reference --output are all required")
-        final,_=calibrate(args.source,args.reference,args.output);print(str(final),flush=True);return
+        try:
+            final,_=calibrate(args.source,args.reference,args.output);print(str(final),flush=True);return
+        except Exception as e:
+            failure=_failure_record(args.output,args.source,args.reference,e)
+            print(str(failure),file=sys.stderr,flush=True);raise
     raise SystemExit(gui())
 
 
-if __name__=="__main__":
-    main()
+if __name__=="__main__":main()

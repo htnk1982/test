@@ -61,6 +61,9 @@ jobs:
           if ((Get-Content -LiteralPath $probe -Raw).Trim() -ne 'PDRM_OFFLINE_OK') { throw 'offline model .probe content mismatch' }
           $sidecars = @(Get-ChildItem -LiteralPath "$root/models/4stems" -Recurse -File | Where-Object { $_.Name -like '._*' })
           if ($sidecars.Count -ne 0) { throw ('AppleDouble metadata leaked into distributable model: ' + ($sidecars.FullName -join ', ')) }
+          foreach ($name in @('vcruntime140.dll','msvcp140.dll')) {
+            if (!(Test-Path -LiteralPath (Join-Path $root $name) -PathType Leaf)) { throw ('application-local VC runtime missing: ' + $name) }
+          }
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -92,7 +95,7 @@ jobs:
         with:
           name: pdrm-P01-private-calibration-bundle
           path: 'roundtrip_日本語 空白'
-      - name: Verify downloaded artifact and run worker self-test
+      - name: Verify downloaded artifact and run native worker self-test
         shell: pwsh
         run: |
           $root = Join-Path $PWD 'roundtrip_日本語 空白'
@@ -101,8 +104,11 @@ jobs:
           if (!(Test-Path -LiteralPath $probe -PathType Leaf)) { throw 'artifact roundtrip lost offline model .probe' }
           $sidecars = @(Get-ChildItem -LiteralPath (Join-Path $runtime 'models/4stems') -Recurse -File | Where-Object { $_.Name -like '._*' })
           if ($sidecars.Count -ne 0) { throw ('artifact roundtrip contains AppleDouble metadata: ' + ($sidecars.FullName -join ', ')) }
+          foreach ($name in @('vcruntime140.dll','msvcp140.dll')) {
+            if (!(Test-Path -LiteralPath (Join-Path $runtime $name) -PathType Leaf)) { throw ('artifact lost application-local VC runtime: ' + $name) }
+          }
           & (Join-Path $runtime 'python.exe') -I (Join-Path $runtime 'observer_worker_spleeter_v47.py') --self-test
-          if ($LASTEXITCODE -ne 0) { throw 'artifact worker self-test failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'artifact native worker self-test failed' }
       - name: Execute frozen full private-calibration self-test after artifact roundtrip
         shell: pwsh
         run: |

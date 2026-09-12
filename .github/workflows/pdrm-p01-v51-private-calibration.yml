@@ -1,7 +1,7 @@
 name: PDRM P01 v51 Private Calibration Bundle
 on:
   push:
-    branches: [pdrm-observer-pruning-v51]
+    branches: [pdrm-observer-pruning-v51, pdrm-note-sub-lab-v1]
     paths:
       - 'PDRM_Local_Render_Engine_v1/p01_private_calibration_entry_v51.py'
       - 'PDRM_Local_Render_Engine_v1/p01_private_calibration_bootstrap_v51.py'

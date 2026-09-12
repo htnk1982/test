@@ -1,0 +1,131 @@
+name: PDRM P01 v51 Private Calibration Bundle
+on:
+  push:
+    branches: [pdrm-observer-pruning-v51]
+    paths:
+      - 'PDRM_Local_Render_Engine_v1/p01_private_calibration_entry_v51.py'
+      - 'PDRM_Local_Render_Engine_v1/p01_private_calibration_bootstrap_v51.py'
+      - 'PDRM_Local_Render_Engine_v1/packaging/build_p01_private_calibration_bundle_v51.py'
+      - 'PDRM_Local_Render_Engine_v1/automatic_joint_v51.py'
+      - 'PDRM_Local_Render_Engine_v1/automatic_joint_v50.py'
+      - 'PDRM_Local_Render_Engine_v1/same_f0_permission_v50.py'
+      - 'PDRM_Local_Render_Engine_v1/physical_add_bridge_v50.py'
+      - 'PDRM_Local_Render_Engine_v1/spleeter_observer_adapter_v48.py'
+      - 'PDRM_Local_Render_Engine_v1/observer_worker_spleeter_v47.py'
+      - 'PDRM_Local_Render_Engine_v1/observer_runtime_client_v47.py'
+      - 'PDRM_Local_Render_Engine_v1/packaging/build_spleeter_capsule_v47.py'
+      - '.github/workflows/pdrm-p01-v51-private-calibration.yml'
+permissions:
+  contents: read
+jobs:
+  windows-bundle:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: PDRM_Local_Render_Engine_v1
+    env:
+      PYTHONUTF8: '1'
+      TF_CPP_MIN_LOG_LEVEL: '2'
+      OMP_NUM_THREADS: '2'
+    steps:
+      - name: Preserve source bytes
+        working-directory: .
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Builder Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build isolated Spleeter runtime
+        run: python packaging/build_spleeter_capsule_v47.py
+      - name: Main PDRM Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install frozen-main dependencies
+        run: python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1 pyloudnorm==0.2.0 imageio-ffmpeg==0.6.0 psutil==7.0.0 pyinstaller==6.16.0
+      - name: Build and execute frozen v51 private-calibration self-test
+        run: python packaging/build_p01_private_calibration_bundle_v51.py
+      - name: Assert distributable runtime and v51 self-test before upload
+        shell: pwsh
+        run: |
+          $bundle = 'P01_V51_PRIVATE_BUNDLE/PDRM_P01_Private_Calibration'
+          $root = Join-Path $bundle 'PDRM_OBSERVER_RUNTIME'
+          $probe = Join-Path $root 'models/4stems/.probe'
+          if (!(Test-Path -LiteralPath $probe -PathType Leaf)) { throw 'offline model .probe missing before upload' }
+          if ((Get-Content -LiteralPath $probe -Raw).Trim() -ne 'PDRM_OFFLINE_OK') { throw 'offline model .probe content mismatch' }
+          $sidecars = @(Get-ChildItem -LiteralPath (Join-Path $root 'models/4stems') -Recurse -File | Where-Object { $_.Name -like '._*' })
+          if ($sidecars.Count -ne 0) { throw ('AppleDouble metadata leaked: ' + ($sidecars.FullName -join ', ')) }
+          foreach ($name in @('vcruntime140.dll','msvcp140.dll')) {
+            if (!(Test-Path -LiteralPath (Join-Path $root $name) -PathType Leaf)) { throw ('application-local VC runtime missing: ' + $name) }
+          }
+          $st = Get-Content -LiteralPath 'P01_V51_PRIVATE_BUNDLE_EVIDENCE/SELFTEST/P01_BUNDLE_SELFTEST.json' -Raw | ConvertFrom-Json
+          if (!$st.success) { throw 'frozen self-test success=false' }
+          if ($st.planner_implementation -ne 'automatic-joint-lab-0.4.0') { throw ('wrong planner: ' + $st.planner_implementation) }
+          if ($st.reference_count -ne 24 -or $st.reference_codec -ne 'MP3') { throw 'canonical MP3 fixture boundary not exercised' }
+          if ($st.global_lossless_contract_relaxed -ne $false) { throw 'global lossless contract was relaxed' }
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: pdrm-P01-v51-private-calibration-bundle
+          path: PDRM_Local_Render_Engine_v1/P01_V51_PRIVATE_BUNDLE/PDRM_P01_Private_Calibration
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
+          include-hidden-files: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-P01-v51-private-calibration-evidence
+          path: PDRM_Local_Render_Engine_v1/P01_V51_PRIVATE_BUNDLE_EVIDENCE
+          if-no-files-found: warn
+          retention-days: 30
+          include-hidden-files: true
+
+  artifact-roundtrip:
+    needs: windows-bundle
+    runs-on: windows-2022
+    timeout-minutes: 35
+    env:
+      PYTHONUTF8: '1'
+      TF_CPP_MIN_LOG_LEVEL: '2'
+      OMP_NUM_THREADS: '2'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pdrm-P01-v51-private-calibration-bundle
+          path: 'roundtrip_日本語 空白_v51'
+      - name: Verify delivered native runtime
+        shell: pwsh
+        run: |
+          $root = Join-Path $PWD 'roundtrip_日本語 空白_v51'
+          $runtime = Join-Path $root 'PDRM_OBSERVER_RUNTIME'
+          $probe = Join-Path $runtime 'models/4stems/.probe'
+          if (!(Test-Path -LiteralPath $probe -PathType Leaf)) { throw 'artifact roundtrip lost .probe' }
+          $sidecars = @(Get-ChildItem -LiteralPath (Join-Path $runtime 'models/4stems') -Recurse -File | Where-Object { $_.Name -like '._*' })
+          if ($sidecars.Count -ne 0) { throw 'artifact contains AppleDouble metadata' }
+          & (Join-Path $runtime 'python.exe') -I (Join-Path $runtime 'observer_worker_spleeter_v47.py') --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'artifact native worker self-test failed' }
+      - name: Execute frozen v51 full self-test after artifact roundtrip
+        shell: pwsh
+        run: |
+          $root = Join-Path $PWD 'roundtrip_日本語 空白_v51'
+          $out = Join-Path $PWD 'roundtrip_v51_evidence'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          & (Join-Path $root 'PDRM_P01_Calibrate.exe') --self-test --self-test-output $out
+          if ($LASTEXITCODE -ne 0) { throw 'artifact frozen v51 full self-test failed' }
+          $st = Get-Content -LiteralPath (Join-Path $out 'P01_BUNDLE_SELFTEST.json') -Raw | ConvertFrom-Json
+          if (!$st.success -or $st.planner_implementation -ne 'automatic-joint-lab-0.4.0') { throw 'roundtrip v51 identity failed' }
+          if ($st.reference_count -ne 24 -or $st.reference_codec -ne 'MP3') { throw 'roundtrip MP3 boundary failed' }
+          $st | ConvertTo-Json -Depth 10
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-P01-v51-artifact-roundtrip-evidence
+          path: roundtrip_v51_evidence
+          if-no-files-found: warn
+          retention-days: 30

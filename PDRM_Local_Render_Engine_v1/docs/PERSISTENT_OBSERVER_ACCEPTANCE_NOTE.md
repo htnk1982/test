@@ -1,0 +1,1 @@
+Acceptance requires one-shot/persistent feature equivalence, same persistent worker PID across repeated calls, source hash preservation, no audio in IPC, P02 Windows runtime success, and P01 artifact-roundtrip success.

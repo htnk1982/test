@@ -30,7 +30,7 @@ def _verify(path,source,target,ceiling,progress=None):
 
 def fit(source,dest,work,target,ceiling,*,progress=None,chunk_seconds=2.0,interrupt_after=None,**kwargs):
     source,dest,work=Path(source),Path(dest),Path(work);work.mkdir(parents=True,exist_ok=True)
-    if not math.isfinite(target) or not -30<=target<=-8 or not math.isfinite(ceiling) or not -12<=ceiling<=-1:
+    if not math.isfinite(target) or not -30<=target<=-8 or not math.isfinite(ceiling) or not -12<=ceiling<=-.5:
         raise ValueError('Invalid automatic peak targets')
     before=io.file_hash(source)
     identity=dict(version=VERSION,source_sha256=before,code_sha256=io.file_hash(__file__),

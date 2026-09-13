@@ -1,8 +1,9 @@
 """GUI/worker boundary and batch preflight for the future release executable.
 
 DSP never runs on the Tk thread. A sealed manifest fixes inputs/targets and
-refuses output collisions. Status publication uses bounded Windows replacement
-retry because the GUI reader or scanner can briefly hold the destination.
+refuses output collisions. Status publication and reads tolerate short-lived
+Windows sharing/indexer/AV contention without converting telemetry loss into an
+audio-processing failure.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -10,7 +11,7 @@ import json,os,subprocess,tempfile,time
 from integration_contract_v40 import digest
 from target_settings import Targets
 
-VERSION='gui-runtime-v0.2.1'
+VERSION='gui-runtime-v0.2.2'
 SCHEMA=1
 STATUS_SCHEMA=1
 MAX_SOURCES=1000
@@ -106,13 +107,31 @@ def request_cancel(session_dir):
     return path
 
 
-def read_status(session_dir,manifest_hash=None):
+def _status_text(path,reader):
+    if reader is None:return Path(path).read_text(encoding='utf-8')
+    return reader(Path(path))
+
+
+def read_status(session_dir,manifest_hash=None,*,reader=None,retry_seconds=.15,retry_sleep=.005):
+    """Read best-effort progress telemetry with bounded transient-I/O retry.
+
+    PermissionError/FileNotFoundError/partial JSON can occur while Windows AV,
+    indexers, the GUI reader, or atomic replacement briefly contend for the file.
+    Schema/identity errors remain hard errors and are never hidden.
+    """
     path=Path(session_dir)/'status.json'
     if not path.is_file():return None
-    value=json.loads(path.read_text(encoding='utf-8'))
-    if value.get('schema')!=STATUS_SCHEMA or value.get('version')!=VERSION:raise ValueError('Unknown worker status')
-    if manifest_hash is not None and value.get('manifest_sha256')!=manifest_hash:raise ValueError('Status belongs to another request')
-    return value
+    deadline=time.monotonic()+max(0.0,float(retry_seconds));last=None
+    while True:
+        try:
+            value=json.loads(_status_text(path,reader))
+            if value.get('schema')!=STATUS_SCHEMA or value.get('version')!=VERSION:raise ValueError('Unknown worker status')
+            if manifest_hash is not None and value.get('manifest_sha256')!=manifest_hash:raise ValueError('Status belongs to another request')
+            return value
+        except (PermissionError,FileNotFoundError,json.JSONDecodeError) as exc:
+            last=exc
+            if time.monotonic()>=deadline:raise last
+            time.sleep(max(0.0,float(retry_sleep)))
 
 
 def launch(command,manifest_path,*,cwd=None):return subprocess.Popen([str(v) for v in command]+['--worker-manifest',str(manifest_path)],cwd=cwd)

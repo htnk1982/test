@@ -6,7 +6,7 @@ and no longer perform REFERENCE_CALIBRATION. Worker mode remains the same EXE.
 """
 from __future__ import annotations
 from pathlib import Path
-import argparse,hashlib,json,os,subprocess,sys,traceback,uuid
+import argparse,hashlib,json,os,subprocess,sys,traceback,uuid,zipfile
 
 import accepted_calibration_cache_v53 as calcache
 import gui_runtime_v44 as gui44
@@ -15,7 +15,7 @@ import natural_gui_v44 as progress_gui
 import product_gui_runtime_v52 as request
 import product_worker_v52 as worker
 
-VERSION='product-app-candidate-0.2.0'
+VERSION='product-app-candidate-0.2.1'
 
 
 def app_root():
@@ -45,6 +45,23 @@ def _worker_command(manifest):
     return [sys.executable,str(Path(__file__).resolve()),'--worker-manifest',str(manifest)]
 
 
+def _diagnostic_zip(session,state):
+    """Create one small shareable diagnostic bundle; never include user audio."""
+    session=Path(session);out=session/'PDRM_DIAGNOSTIC.zip'
+    state_path=session/'GUI_FINAL_STATE.json'
+    try:gui44.atomic_json(state_path,state)
+    except Exception:pass
+    names=('request.json','status.json','worker.log','PRODUCT_FAILURE.json','GUI_WORKER_EXIT.json','GUI_FINAL_STATE.json','product_summary.json')
+    try:
+        with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as z:
+            for name in names:
+                p=session/name
+                if p.is_file():z.write(p,arcname=name)
+        return out
+    except Exception:
+        return None
+
+
 def gui():
     import tkinter as tk
     from tkinter import messagebox
@@ -71,11 +88,14 @@ def gui():
 
     ui=tk.Tk()
     def done(state):
-        log.flush();overall=state.get('overall')
+        try:
+            log.flush();os.fsync(log.fileno())
+        except Exception:pass
+        overall=state.get('overall');diag=_diagnostic_zip(session,state)
         if overall=='COMPLETE':messagebox.showinfo('PDRM','すべての音源を完了しました。\n各元音源フォルダの processed を確認してください。',parent=ui)
-        elif overall=='COMPLETE_WITH_ERRORS':messagebox.showwarning('PDRM','完了しましたが、処理できなかった音源があります。\n進捗画面とworker.logを確認してください。',parent=ui)
+        elif overall=='COMPLETE_WITH_ERRORS':messagebox.showwarning('PDRM','完了しましたが、処理できなかった音源があります。\n'+(f'診断ZIP: {diag}' if diag else f'ログ: {session}'),parent=ui)
         elif overall=='CANCELLED':messagebox.showinfo('PDRM','キャンセルしました。元音源は変更していません。',parent=ui)
-        else:messagebox.showerror('PDRM','workerが異常終了しました。\n'+str(session/'PRODUCT_FAILURE.json'),parent=ui)
+        else:messagebox.showerror('PDRM','workerが異常終了しました。\n\n'+(f'診断ZIPを保存しました:\n{diag}' if diag else f'診断フォルダ:\n{session}'),parent=ui)
     progress_gui.ProgressDialog(ui,proc,session,manifest['sha256'],on_done=done)
     try:ui.mainloop()
     finally:log.close()

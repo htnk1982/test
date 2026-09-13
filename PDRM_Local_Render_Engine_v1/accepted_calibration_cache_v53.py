@@ -10,7 +10,7 @@ serialization/rounding and is separately sealed under its own deterministic SHA.
 from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
-import json,os,tempfile
+import json,os,sys,tempfile
 
 import auto_peak_v34 as auto
 import automatic_joint_v51 as planner51
@@ -21,7 +21,7 @@ import relative_low_dominance_v49 as dominance
 import source_events_v41 as events
 from integration_contract_v40 import capture,digest,file_hash
 
-VERSION='accepted-calibration-cache-0.2.0'
+VERSION='accepted-calibration-cache-0.2.1'
 SCHEMA=2
 EXPECTED_REFERENCE_ZIP_SHA256='82d130a13a07db1c33e802b7286f507a65b4667972f974693bb4c229ff08773a'
 P01_ACCEPTED_CALIBRATION_SHA256='0e258cf233e07e664f7eb56d5e161c20b270211a322282af88efa494993279e1'
@@ -44,7 +44,22 @@ def cache_path(reference_sha=EXPECTED_REFERENCE_ZIP_SHA256,root=None):
 
 
 def precomputed_path():
-    return Path(__file__).resolve().parent/PRECOMPUTED_FILENAME
+    """Resolve shipped metadata from the delivered application, never build cwd.
+
+    PyInstaller can expose source-collected modules under its internal extraction
+    root, while the distributable intentionally also carries a visible root copy.
+    The user-delivered executable directory is authoritative when frozen.
+    """
+    candidates=[]
+    if getattr(sys,'frozen',False):
+        exe_root=Path(sys.executable).resolve().parent
+        candidates.append(exe_root/PRECOMPUTED_FILENAME)
+        meipass=getattr(sys,'_MEIPASS',None)
+        if meipass:candidates.append(Path(meipass).resolve()/PRECOMPUTED_FILENAME)
+    candidates.append(Path(__file__).resolve().parent/PRECOMPUTED_FILENAME)
+    for path in candidates:
+        if path.is_file():return path
+    return candidates[0]
 
 
 def _atomic_json(path,value):

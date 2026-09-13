@@ -78,8 +78,8 @@ jobs:
           if (!$st.source_unchanged -or $st.stem_audio_in_master) { throw 'frozen audio safety invariant failed' }
           if (!$st.calibration_single_pass_parity) { throw 'single-pass calibration differs from legacy definition' }
           if ($st.cache_bootstrap_state -ne 'BUILT_AND_SAVED' -or $st.cache_second_request_state -ne 'HIT' -or !$st.reference_free_second_request) { throw 'accepted calibration cache path failed' }
-          if ($st.target_contract.lufs_step_db -ne 0.5 -or $st.target_contract.tp_max_dbtp -ne -0.5 -or !$st.target_contract.off_grid_lufs_rejected -or !$st.target_contract.tp_above_max_rejected) { throw 'target contract failed' }
-          if ($st.targets.wav_lufs -ne -12.5 -or $st.targets.mp3_lufs -ne -14.5 -or $st.targets.wav_tp -ne -0.5 -or $st.targets.mp3_tp -ne -0.5) { throw 'edge target propagation failed' }
+          if ($st.target_contract.lufs_step_db -ne 0.5 -or $st.target_contract.tp_step_db -ne 0.5 -or $st.target_contract.tp_max_dbtp -ne -0.5 -or !$st.target_contract.off_grid_lufs_rejected -or !$st.target_contract.off_grid_tp_rejected -or !$st.target_contract.tp_above_max_rejected) { throw 'target contract failed' }
+          if ($st.targets.wav_lufs -ne -10 -or $st.targets.mp3_lufs -ne -14 -or $st.targets.wav_tp -ne -0.5 -or $st.targets.mp3_tp -ne -1) { throw 'default target propagation failed' }
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -137,7 +137,8 @@ jobs:
           if ($st.planner_id -ne 'automatic-joint-lab-0.4.0' -or $st.observer_provider -ne 'spleeter_runtime48') { throw 'roundtrip product identity failed' }
           if (!$st.source_unchanged -or $st.stem_audio_in_master) { throw 'roundtrip product safety failed' }
           if (!$st.calibration_single_pass_parity -or $st.cache_second_request_state -ne 'HIT') { throw 'roundtrip calibration cache failed' }
-          if ($st.target_contract.lufs_step_db -ne 0.5 -or $st.target_contract.tp_max_dbtp -ne -0.5) { throw 'roundtrip target contract failed' }
+          if ($st.target_contract.lufs_step_db -ne 0.5 -or $st.target_contract.tp_step_db -ne 0.5 -or $st.target_contract.tp_max_dbtp -ne -0.5) { throw 'roundtrip target contract failed' }
+          if ($st.targets.wav_lufs -ne -10 -or $st.targets.mp3_lufs -ne -14 -or $st.targets.wav_tp -ne -0.5 -or $st.targets.mp3_tp -ne -1) { throw 'roundtrip default target propagation failed' }
           $st | ConvertTo-Json -Depth 10
       - uses: actions/upload-artifact@v4
         if: always()

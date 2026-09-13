@@ -55,6 +55,9 @@ def main():
         dist=build/'dist'/'PDRM_Windows';exe=dist/'PDRM.exe'
         if not exe.is_file():raise RuntimeError('Frozen PDRM product EXE missing')
         shutil.copytree(runtime,dist/'PDRM_OBSERVER_RUNTIME')
+        # Keep a visible root copy for integrity inspection and artifact roundtrip.
+        # PyInstaller also carries the same metadata under its internal data area.
+        shutil.copyfile(precomputed,dist/'precomputed_calibration_v54.json')
         readme=f'''PDRM Windows Product Candidate v55\n=================================\nPlanner: {PLANNER}\nFinalizer: {FINALIZER}\nDefault WAV: -10 LUFS-I / -0.5 dBTP\nDefault MP3: -14 LUFS-I / -1.0 dBTP\nLUFS / TP adjustment: 0.5 dB steps\nBuild commit: {commit}\n\nDouble-click PDRM.exe and select one or more original WAV/FLAC files.\nNo reference.zip is required. The canonical 24-track calibration has already been computed and is shipped only as sealed derived numerical metadata. On first launch that metadata is copied into LocalAppData; reference audio is neither bundled nor decoded.\nOriginal audio is never overwritten. Spleeter stems are analysis evidence only and are never exported or mixed into the master.\nIf processing fails, PDRM writes PDRM_DIAGNOSTIC.zip in the session directory and closes cleanly after the error dialog.\n'''
         (dist/'README_PDRM.txt').write_text(readme,encoding='utf-8')
         isolated=build/'日本語 空白'/'PDRM 製品候補';isolated.parent.mkdir();shutil.copytree(dist,isolated);testout=EVIDENCE/'SELFTEST';testout.mkdir();env=dict(os.environ)

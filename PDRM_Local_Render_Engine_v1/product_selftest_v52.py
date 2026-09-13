@@ -1,9 +1,10 @@
 """Generated-audio self-test for the frozen P08 product candidate.
 
-The test proves that the product ships a valid precomputed calibration, installs
-it without any reference path, reuses it on the second request, honors the
-current 0.5 dB target grid/defaults, and survives transient Windows contention
-on progress telemetry. No user/private/reference audio enters CI.
+The test proves that the product ships a valid precomputed calibration, resolves
+it from the delivered executable directory, installs it without any reference
+path, reuses it on the second request, honors the current 0.5 dB target grid,
+and survives transient Windows contention on progress telemetry.
+No user/private/reference audio enters CI.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -18,7 +19,7 @@ import product_worker_v52 as worker
 from integration_contract_v40 import file_hash
 from target_settings import Targets
 
-VERSION='product-selftest-0.6.0'
+VERSION='product-selftest-0.6.1'
 
 
 def _target_contract():
@@ -56,6 +57,10 @@ def self_test(destination):
         status_attempts=_status_retry_contract(root)
 
         # Validate shipped derived metadata before any worker process uses it.
+        precomputed_file=calcache.precomputed_path().resolve();frozen=bool(getattr(sys,'frozen',False));exe_root=Path(sys.executable).resolve().parent
+        if not precomputed_file.is_file():raise RuntimeError('Resolved precomputed calibration file does not exist')
+        if frozen and precomputed_file.parent!=exe_root:
+            raise RuntimeError('Frozen product did not resolve precomputed calibration from executable root')
         precomputed=calcache.read_precomputed()
         if precomputed.get('sha256')!=calcache.EXPECTED_CALIBRATION_SHA256:raise RuntimeError('Precomputed calibration identity mismatch')
         if calcache.load(root=cache_root) is not None:raise RuntimeError('Self-test cache unexpectedly pre-populated')
@@ -73,7 +78,7 @@ def self_test(destination):
         source2=inputs/'製品 キャッシュ試験.wav';sf.write(source2,p01core._fixture_source(),48000,subtype='DOUBLE')
         session2=root/'session_cache_hit';m2=request._body([source2],None,targets,False,work,session2,expected_reference_sha=calcache.EXPECTED_REFERENCE_ZIP_SHA256,cache_ready=True)
         p2=root/'request_cache.json';request.write_manifest(p2,m2)
-        final2=worker.run_manifest(p2,runtime_override=worker.runtime_root(),cache_root_override=cache_root)
+        final2=worker.run_manifest(p2,runtime_override=worker.runtime_root(),expected_reference_sha=calcache.EXPECTED_REFERENCE_ZIP_SHA256,cache_root_override=cache_root)
         if final2.get('overall')!='COMPLETE' or (final2.get('calibration_cache') or {}).get('state')!='HIT':raise RuntimeError('Second request did not reuse precomputed calibration cache')
 
         output=inputs/'processed'/'製品 自己試験.wav';mp3=inputs/'processed'/'製品 自己試験.mp3'
@@ -89,7 +94,8 @@ def self_test(destination):
         if abs(mm['lufs_i']-targets.wav_lufs)>.03 or mm['true_peak_max_dbtp_estimate']>targets.wav_tp:raise RuntimeError('Frozen WAV target failed')
         if abs(cm['lufs_i']-targets.mp3_lufs)>.03 or cm['true_peak_max_dbtp_estimate']>targets.mp3_tp:raise RuntimeError('Frozen MP3 target failed')
         summary=dict(
-            success=True,version=VERSION,frozen=bool(getattr(sys,'frozen',False)),executable=str(Path(sys.executable).resolve()),
+            success=True,version=VERSION,frozen=frozen,executable=str(Path(sys.executable).resolve()),
+            precomputed_path=str(precomputed_file),precomputed_from_executable_root=(precomputed_file.parent==exe_root),
             planner_id=ident['planner_id'],calibration_sha256=ident.get('calibration_sha256'),p01_accepted_calibration_sha256=calcache.P01_ACCEPTED_CALIBRATION_SHA256,
             precomputed_calibration_valid=True,precomputed_install_state=final['calibration_cache']['state'],cache_second_request_state=final2['calibration_cache']['state'],reference_free_product_request=True,reference_audio_bundled=False,reference_audio_required=False,
             status_read_retry=True,status_read_retry_attempts=status_attempts,status_runtime_version=gui44.VERSION,

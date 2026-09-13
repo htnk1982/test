@@ -8,6 +8,18 @@ import os
 import tempfile
 import unicodedata
 
+LUFS_MIN=-30.0
+LUFS_MAX=-8.0
+LUFS_STEP=0.5
+TP_MIN=-12.0
+TP_MAX=-0.5
+
+
+def _on_grid(value,step):
+    scaled=float(value)/float(step)
+    return abs(scaled-round(scaled))<=1e-9
+
+
 @dataclass(frozen=True)
 class Targets:
     wav_lufs: float = -12.0
@@ -19,10 +31,14 @@ class Targets:
         for name, value in asdict(self).items():
             if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
                 raise ValueError(f'{name}: 有限の数値を入力してください。')
-            lower, upper = (-30.0, -8.0) if name.endswith('lufs') else (-12.0, -1.0)
-            if not lower <= value <= upper:
-                label = 'LUFS' if name.endswith('lufs') else 'True Peak上限 (dBTP)'
-                raise ValueError(f'{name[:3].upper()} {label}: {lower:g}〜{upper:g}の範囲で指定してください。')
+            if name.endswith('lufs'):
+                if not LUFS_MIN <= value <= LUFS_MAX:
+                    raise ValueError(f'{name[:3].upper()} LUFS: {LUFS_MIN:g}〜{LUFS_MAX:g}の範囲で指定してください。')
+                if not _on_grid(value,LUFS_STEP):
+                    raise ValueError(f'{name[:3].upper()} LUFS: {LUFS_STEP:g} dB刻みで指定してください。')
+            else:
+                if not TP_MIN <= value <= TP_MAX:
+                    raise ValueError(f'{name[:3].upper()} True Peak上限 (dBTP): {TP_MIN:g}〜{TP_MAX:g}の範囲で指定してください。')
         return self
 
     def to_dict(self):

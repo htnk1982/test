@@ -208,7 +208,7 @@ def render_fixed_gain(source,work,gain_db,ceiling,cfg=kernel.Config(),*,
 
 
 def fit(source,dest,work,target,ceiling,*,cfg=kernel.Config(),context_cfg=context.ContextConfig(),progress=None,chunk_seconds=2.0,interrupt_after=None):
-    if not math.isfinite(target) or not -30<=target<=-8 or not math.isfinite(ceiling) or not -12<=ceiling<=-1:raise ValueError('Invalid output targets')
+    if not math.isfinite(target) or not -30<=target<=-8 or not math.isfinite(ceiling) or not -12<=ceiling<=-.5:raise ValueError('Invalid output targets')
     source,dest,work=Path(source).resolve(),Path(dest).resolve(),Path(work).resolve()
     if source==dest:raise ValueError('Never overwrite source')
     info=validate_source(source,cfg);kernel_hash=verify_kernel();context_cfg.validate(info.samplerate*cfg.oversample);context_dict=_context_config(context_cfg)

@@ -1,10 +1,9 @@
-"""P08 product-candidate worker with sealed calibration reuse.
+"""P08 product-candidate worker with precomputed sealed calibration.
 
-The canonical calibration is no longer recomputed for every batch. Normal runs
-load the accepted local cache and go directly to song processing. If the cache
-does not yet exist, one canonical reference.zip bootstrap is allowed: references
-are decoded locally, a single shared feature pass builds the exact v51 calibration,
-and the result is cached only if its SHA equals the privately accepted P01 SHA.
+Normal product execution never decodes or scans reference audio. The canonical
+24-track calibration is shipped as derived metadata and installed into the local
+sealed cache on demand. Legacy/bootstrap construction remains only for imported
+fixture verification and is not part of the user GUI path.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -20,7 +19,7 @@ import product_processed_v52 as product
 from spleeter_observer_adapter_v48 import SpleeterRuntimeObserver
 from target_settings import Targets
 
-VERSION='product-worker-0.2.0'
+VERSION='product-worker-0.3.0'
 
 
 def bundle_root():
@@ -50,24 +49,32 @@ def run_manifest(path,*,runtime_override=None,expected_reference_sha=None,
         work=Path(manifest['work_root']).absolute();work.mkdir(parents=True,exist_ok=True)
         session=Path(manifest['session_dir']).absolute();status=gui44.StatusProgress(session,manifest['sha256']);status.file_total=len(sources)
         ref_sha=manifest['reference_sha256'];expected_cal=manifest.get('calibration_sha256')
-        status.set('REFERENCE_CALIBRATION_CACHE_CHECK',0,1)
+        status.set('CALIBRATION_CACHE_CHECK',0,1)
         calibration=calcache.load(ref_sha,expected_calibration_sha=expected_cal,root=cache_root_override)
         cache_state='HIT' if calibration is not None else 'MISS'
+
+        # Canonical product path: install derived metadata shipped with the EXE.
+        if (calibration is None and not allow_fixture_reference and
+            ref_sha==calcache.EXPECTED_REFERENCE_ZIP_SHA256 and
+            expected_cal==calcache.EXPECTED_CALIBRATION_SHA256):
+            status.set('PRECOMPUTED_CALIBRATION_INSTALL',0,1)
+            calibration=calcache.install_precomputed(root=cache_root_override)
+            cache_state='PRECOMPUTED_INSTALLED'
+
+        # Retained only for generated fixture verification / noncanonical tests.
         if calibration is None:
             if manifest.get('reference_mode')!=request.BOOTSTRAP_MODE:
-                raise RuntimeError('Accepted calibration cache is missing or invalid; restart and select canonical reference.zip once')
-            status.set('REFERENCE_LOCAL_DECODE_ONCE',0,1)
+                raise RuntimeError('Calibration cache is missing or invalid')
+            status.set('REFERENCE_LOCAL_DECODE_FIXTURE',0,1)
             with TemporaryDirectory(prefix='p08_reference_',dir=work) as ref_td:
                 refs=_references(Path(manifest['reference_zip']),Path(ref_td),allow_fixture_reference=allow_fixture_reference)
-                if len(refs)!=24:raise RuntimeError('Accepted calibration requires exactly 24 references')
+                if len(refs)!=24:raise RuntimeError('Calibration fixture requires exactly 24 references')
                 specs=[dict(path=p,role='bass',quality='positive') for p in refs]
-                status.set('REFERENCE_CALIBRATION_BUILD_ONCE',0,len(refs))
-                calibration=calcache.build_calibration(specs,status)
+                status.set('REFERENCE_CALIBRATION_FIXTURE',0,len(refs));calibration=calcache.build_calibration(specs,status)
             if expected_cal is not None and calibration.get('sha256')!=expected_cal:
-                raise RuntimeError('One-time calibration did not reproduce the accepted P01 calibration SHA')
-            calcache.save(calibration,ref_sha,expected_calibration_sha=expected_cal,root=cache_root_override)
-            cache_state='BUILT_AND_SAVED'
-        status.set('REFERENCE_CALIBRATION_READY',1,1)
+                raise RuntimeError('Fixture calibration did not reproduce the expected SHA')
+            calcache.save(calibration,ref_sha,expected_calibration_sha=expected_cal,root=cache_root_override);cache_state='BUILT_AND_SAVED'
+        status.set('CALIBRATION_READY',1,1)
 
         with TemporaryDirectory(prefix='p08_observer_',dir=work) as observer_td:
             runtime=Path(runtime_override).absolute() if runtime_override is not None else runtime_root()
@@ -75,8 +82,7 @@ def run_manifest(path,*,runtime_override=None,expected_reference_sha=None,
             observer=SpleeterRuntimeObserver(runtime,work_root=Path(observer_td),timeout=600)
             planner=planner51.AutomaticJointPlanner(calibration,observer);planner.preflight();identity=planner.identity()
             if identity.get('planner_id')!=planner51.VERSION:raise RuntimeError('Unexpected product planner identity')
-            if expected_cal is not None and identity.get('calibration_sha256')!=expected_cal:
-                raise RuntimeError('Planner did not bind the accepted calibration')
+            if expected_cal is not None and identity.get('calibration_sha256')!=expected_cal:raise RuntimeError('Planner did not bind expected calibration')
             render_root=work/'renders';render_root.mkdir(parents=True,exist_ok=True)
             for i,source in enumerate(sources,1):
                 status.set_file(i,len(sources),source)
@@ -91,7 +97,7 @@ def run_manifest(path,*,runtime_override=None,expected_reference_sha=None,
             final=status.finish('COMPLETE_WITH_ERRORS' if status.failures else 'COMPLETE')
             final['planner_identity']=identity;final['product_worker_version']=VERSION
             final['calibration_cache']=dict(state=cache_state,version=calcache.VERSION,reference_sha256=ref_sha,
-                calibration_sha256=calibration['sha256'],reference_audio_embedded=False)
+                calibration_sha256=calibration['sha256'],reference_audio_embedded=False,precomputed_product_metadata=not allow_fixture_reference)
             gui44.atomic_json(session/'product_summary.json',final);return final
     except InterruptedError as exc:
         if status is None:raise

@@ -1,9 +1,11 @@
 """Generated-audio self-test for the frozen P08 product candidate.
 
-The test now proves two additional release properties:
+The test proves release properties for calibration caching and output targets:
 1. single-pass calibration is SHA-identical to the accepted legacy double scan;
 2. after one bootstrap, a second product request runs from the sealed calibration
-   cache without any reference path.
+   cache without any reference path;
+3. LUFS targets are accepted on a 0.5 dB grid and TP ceilings through -0.5 dBTP
+   propagate through the frozen product path.
 No user/private audio enters this path.
 """
 from __future__ import annotations
@@ -21,7 +23,7 @@ import product_worker_v52 as worker
 from integration_contract_v40 import file_hash
 from target_settings import Targets
 
-VERSION='product-selftest-0.2.0'
+VERSION='product-selftest-0.3.0'
 
 
 def _make_reference(root):
@@ -50,14 +52,31 @@ def _quick_calibration_parity(root):
     return legacy['sha256']
 
 
+def _target_contract():
+    edge=Targets(wav_lufs=-12.5,wav_tp=-0.5,mp3_lufs=-14.5,mp3_tp=-0.5).validate()
+    try:
+        Targets(wav_lufs=-12.25,wav_tp=-0.5,mp3_lufs=-14.5,mp3_tp=-0.5).validate()
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError('Off-grid LUFS target was not rejected')
+    try:
+        Targets(wav_lufs=-12.5,wav_tp=-0.4,mp3_lufs=-14.5,mp3_tp=-0.5).validate()
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError('TP target above -0.5 dBTP was not rejected')
+    return edge
+
+
 def self_test(destination):
     dest=Path(destination).resolve();dest.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='p08_frozen_selftest_') as td:
         root=Path(td);inputs=root/'日本語 空白 入力';inputs.mkdir();work=root/'work';session=root/'session';cache_root=root/'calibration_cache'
-        parity_sha=_quick_calibration_parity(root)
+        parity_sha=_quick_calibration_parity(root);targets=_target_contract()
         archive=_make_reference(root);ref_sha=file_hash(archive)
         source=inputs/'製品 自己試験.wav';sf.write(source,p01core._fixture_source(),48000,subtype='DOUBLE');source_sha=file_hash(source)
-        manifest=request._body([source],archive,Targets(),False,work,session,expected_reference_sha=ref_sha)
+        manifest=request._body([source],archive,targets,False,work,session,expected_reference_sha=ref_sha)
         manifest_path=root/'request.json';request.write_manifest(manifest_path,manifest)
         final=worker.run_manifest(manifest_path,runtime_override=worker.runtime_root(),expected_reference_sha=ref_sha,allow_fixture_reference=True,cache_root_override=cache_root)
         if final.get('overall')!='COMPLETE' or len(final.get('completed',[]))!=1 or final.get('failures'):raise RuntimeError('Frozen product self-test batch failed')
@@ -68,7 +87,7 @@ def self_test(destination):
 
         # Second request: no reference path at all. It must hit the cache.
         source2=inputs/'製品 キャッシュ試験.wav';sf.write(source2,p01core._fixture_source(),48000,subtype='DOUBLE')
-        session2=root/'session_cache_hit';m2=request._body([source2],None,Targets(),False,work,session2,expected_reference_sha=ref_sha,cache_ready=True)
+        session2=root/'session_cache_hit';m2=request._body([source2],None,targets,False,work,session2,expected_reference_sha=ref_sha,cache_ready=True)
         p2=root/'request_cache.json';request.write_manifest(p2,m2)
         final2=worker.run_manifest(p2,runtime_override=worker.runtime_root(),expected_reference_sha=ref_sha,allow_fixture_reference=True,cache_root_override=cache_root)
         if final2.get('overall')!='COMPLETE' or (final2.get('calibration_cache') or {}).get('state')!='HIT':raise RuntimeError('Reference-free cache-hit product path failed')
@@ -83,14 +102,15 @@ def self_test(destination):
         first=[p for p in marker if json.loads(p.read_text(encoding='utf-8'))['request']['source_name']==source.name]
         if len(first)!=1:raise RuntimeError('First publication marker not found')
         receipt=json.loads(first[0].read_text(encoding='utf-8'));mm=receipt['master_metrics'];cm=receipt['codec_metrics']
-        if abs(mm['lufs_i']+12)>.03 or mm['true_peak_max_dbtp_estimate']>-2:raise RuntimeError('Frozen WAV target failed')
-        if abs(cm['lufs_i']+14)>.03 or cm['true_peak_max_dbtp_estimate']>-2:raise RuntimeError('Frozen MP3 target failed')
+        if abs(mm['lufs_i']-targets.wav_lufs)>.03 or mm['true_peak_max_dbtp_estimate']>targets.wav_tp:raise RuntimeError('Frozen WAV target failed')
+        if abs(cm['lufs_i']-targets.mp3_lufs)>.03 or cm['true_peak_max_dbtp_estimate']>targets.mp3_tp:raise RuntimeError('Frozen MP3 target failed')
         summary=dict(
             success=True,version=VERSION,frozen=bool(getattr(sys,'frozen',False)),executable=str(Path(sys.executable).resolve()),
             planner_id=ident['planner_id'],calibration_sha256=ident.get('calibration_sha256'),observer_provider=obs['provider'],
             observer_runtime_manifest_sha256=obs.get('runtime_manifest_sha256'),source_unchanged=True,stem_audio_in_master=False,runtime_model_download=False,
             canonical_reference_used=False,fixture_reference_sha256=ref_sha,calibration_single_pass_parity=True,parity_calibration_sha256=parity_sha,
             cache_bootstrap_state=final['calibration_cache']['state'],cache_second_request_state=final2['calibration_cache']['state'],reference_free_second_request=True,
-            targets=Targets().to_dict(),master_metrics=mm,codec_metrics=cm,product_worker=worker.VERSION,product_runtime=request.VERSION,
-            scope='generated-audio frozen distribution/cache self-test; not listening acceptance')
+            target_contract=dict(lufs_step_db=.5,tp_max_dbtp=-.5,off_grid_lufs_rejected=True,tp_above_max_rejected=True),
+            targets=targets.to_dict(),master_metrics=mm,codec_metrics=cm,product_worker=worker.VERSION,product_runtime=request.VERSION,
+            scope='generated-audio frozen distribution/cache/target-contract self-test; not listening acceptance')
         (dest/'P08_PRODUCT_SELFTEST.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8');return summary

@@ -9,6 +9,7 @@ on:
       - 'PDRM_Local_Render_Engine_v1/product_processed_v52.py'
       - 'PDRM_Local_Render_Engine_v1/product_selftest_v52.py'
       - 'PDRM_Local_Render_Engine_v1/accepted_calibration_cache_v53.py'
+      - 'PDRM_Local_Render_Engine_v1/precomputed_calibration_v54.json'
       - 'PDRM_Local_Render_Engine_v1/packaging/build_product_v52.py'
       - 'PDRM_Local_Render_Engine_v1/target_settings.py'
       - 'PDRM_Local_Render_Engine_v1/natural_gui_v34.py'
@@ -56,7 +57,7 @@ jobs:
           python-version: '3.12'
       - name: Install frozen-main dependencies
         run: python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1 pyloudnorm==0.2.0 imageio-ffmpeg==0.6.0 psutil==7.0.0 pyinstaller==6.16.0
-      - name: Build and execute frozen product/cache self-test
+      - name: Build and execute frozen product/precomputed-calibration self-test
         run: python packaging/build_product_v52.py
       - name: Assert distributable candidate before upload
         shell: pwsh
@@ -65,6 +66,7 @@ jobs:
           $runtime = Join-Path $bundle 'PDRM_OBSERVER_RUNTIME'
           $probe = Join-Path $runtime 'models/4stems/.probe'
           if (!(Test-Path -LiteralPath (Join-Path $bundle 'PDRM.exe') -PathType Leaf)) { throw 'PDRM.exe missing' }
+          if (!(Test-Path -LiteralPath (Join-Path $bundle 'precomputed_calibration_v54.json') -PathType Leaf)) { throw 'precomputed calibration metadata missing' }
           if (!(Test-Path -LiteralPath $probe -PathType Leaf)) { throw 'offline model .probe missing before upload' }
           if ((Get-Content -LiteralPath $probe -Raw).Trim() -ne 'PDRM_OFFLINE_OK') { throw 'offline model .probe content mismatch' }
           $sidecars = @(Get-ChildItem -LiteralPath (Join-Path $runtime 'models/4stems') -Recurse -File | Where-Object { $_.Name -like '._*' })
@@ -76,8 +78,8 @@ jobs:
           if (!$st.success -or !$st.frozen) { throw 'frozen product self-test failed' }
           if ($st.planner_id -ne 'automatic-joint-lab-0.4.0' -or $st.observer_provider -ne 'spleeter_runtime48') { throw 'frozen accepted identity changed' }
           if (!$st.source_unchanged -or $st.stem_audio_in_master) { throw 'frozen audio safety invariant failed' }
-          if (!$st.calibration_single_pass_parity) { throw 'single-pass calibration differs from legacy definition' }
-          if ($st.cache_bootstrap_state -ne 'BUILT_AND_SAVED' -or $st.cache_second_request_state -ne 'HIT' -or !$st.reference_free_second_request) { throw 'accepted calibration cache path failed' }
+          if (!$st.precomputed_calibration_valid -or !$st.reference_free_product_request -or $st.reference_audio_bundled -or $st.reference_audio_required) { throw 'precomputed reference-free calibration path failed' }
+          if ($st.precomputed_install_state -ne 'PRECOMPUTED_INSTALLED' -or $st.cache_second_request_state -ne 'HIT') { throw 'precomputed calibration cache install/reuse failed' }
           if ($st.target_contract.lufs_step_db -ne 0.5 -or $st.target_contract.tp_step_db -ne 0.5 -or $st.target_contract.tp_max_dbtp -ne -0.5 -or !$st.target_contract.off_grid_lufs_rejected -or !$st.target_contract.off_grid_tp_rejected -or !$st.target_contract.tp_above_max_rejected) { throw 'target contract failed' }
           if ($st.targets.wav_lufs -ne -10 -or $st.targets.mp3_lufs -ne -14 -or $st.targets.wav_tp -ne -0.5 -or $st.targets.mp3_tp -ne -1) { throw 'default target propagation failed' }
       - uses: actions/upload-artifact@v4
@@ -119,6 +121,7 @@ jobs:
           $root = Join-Path $PWD 'roundtrip_日本語 空白_P08'
           $runtime = Join-Path $root 'PDRM_OBSERVER_RUNTIME'
           $probe = Join-Path $runtime 'models/4stems/.probe'
+          if (!(Test-Path -LiteralPath (Join-Path $root 'precomputed_calibration_v54.json') -PathType Leaf)) { throw 'artifact lost precomputed calibration metadata' }
           if (!(Test-Path -LiteralPath $probe -PathType Leaf)) { throw 'artifact roundtrip lost .probe' }
           $sidecars = @(Get-ChildItem -LiteralPath (Join-Path $runtime 'models/4stems') -Recurse -File | Where-Object { $_.Name -like '._*' })
           if ($sidecars.Count -ne 0) { throw 'artifact contains AppleDouble metadata' }
@@ -136,7 +139,7 @@ jobs:
           if (!$st.success -or !$st.frozen) { throw 'roundtrip product self-test success=false' }
           if ($st.planner_id -ne 'automatic-joint-lab-0.4.0' -or $st.observer_provider -ne 'spleeter_runtime48') { throw 'roundtrip product identity failed' }
           if (!$st.source_unchanged -or $st.stem_audio_in_master) { throw 'roundtrip product safety failed' }
-          if (!$st.calibration_single_pass_parity -or $st.cache_second_request_state -ne 'HIT') { throw 'roundtrip calibration cache failed' }
+          if (!$st.precomputed_calibration_valid -or !$st.reference_free_product_request -or $st.cache_second_request_state -ne 'HIT') { throw 'roundtrip precomputed calibration failed' }
           if ($st.target_contract.lufs_step_db -ne 0.5 -or $st.target_contract.tp_step_db -ne 0.5 -or $st.target_contract.tp_max_dbtp -ne -0.5) { throw 'roundtrip target contract failed' }
           if ($st.targets.wav_lufs -ne -10 -or $st.targets.mp3_lufs -ne -14 -or $st.targets.wav_tp -ne -0.5 -or $st.targets.mp3_tp -ne -1) { throw 'roundtrip default target propagation failed' }
           $st | ConvertTo-Json -Depth 10

@@ -4,8 +4,8 @@ The test proves release properties for calibration caching and output targets:
 1. single-pass calibration is SHA-identical to the accepted legacy double scan;
 2. after one bootstrap, a second product request runs from the sealed calibration
    cache without any reference path;
-3. LUFS targets are accepted on a 0.5 dB grid and TP ceilings through -0.5 dBTP
-   propagate through the frozen product path.
+3. LUFS and TP targets are accepted on a 0.5 dB grid, TP ceilings extend through
+   -0.5 dBTP, and the current product defaults propagate through the frozen path.
 No user/private audio enters this path.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ import product_worker_v52 as worker
 from integration_contract_v40 import file_hash
 from target_settings import Targets
 
-VERSION='product-selftest-0.3.0'
+VERSION='product-selftest-0.4.0'
 
 
 def _make_reference(root):
@@ -53,20 +53,19 @@ def _quick_calibration_parity(root):
 
 
 def _target_contract():
-    edge=Targets(wav_lufs=-12.5,wav_tp=-0.5,mp3_lufs=-14.5,mp3_tp=-0.5).validate()
-    try:
-        Targets(wav_lufs=-12.25,wav_tp=-0.5,mp3_lufs=-14.5,mp3_tp=-0.5).validate()
-    except ValueError:
-        pass
-    else:
-        raise RuntimeError('Off-grid LUFS target was not rejected')
-    try:
-        Targets(wav_lufs=-12.5,wav_tp=-0.4,mp3_lufs=-14.5,mp3_tp=-0.5).validate()
-    except ValueError:
-        pass
-    else:
-        raise RuntimeError('TP target above -0.5 dBTP was not rejected')
-    return edge
+    defaults=Targets().validate()
+    expected=dict(wav_lufs=-10.0,wav_tp=-0.5,mp3_lufs=-14.0,mp3_tp=-1.0)
+    if defaults.to_dict()!=expected:raise RuntimeError('Product target defaults changed unexpectedly')
+    Targets(wav_lufs=-12.5,wav_tp=-0.5,mp3_lufs=-14.5,mp3_tp=-1.0).validate()
+    for bad in (
+        dict(wav_lufs=-12.25,wav_tp=-0.5,mp3_lufs=-14.5,mp3_tp=-1.0),
+        dict(wav_lufs=-12.5,wav_tp=-0.75,mp3_lufs=-14.5,mp3_tp=-1.0),
+        dict(wav_lufs=-12.5,wav_tp=-0.4,mp3_lufs=-14.5,mp3_tp=-1.0),
+    ):
+        try:Targets(**bad).validate()
+        except ValueError:pass
+        else:raise RuntimeError('Invalid target contract value was not rejected: '+str(bad))
+    return defaults
 
 
 def self_test(destination):
@@ -85,7 +84,6 @@ def self_test(destination):
         cached=calcache.load(ref_sha,expected_calibration_sha=ident.get('calibration_sha256'),root=cache_root)
         if cached is None:raise RuntimeError('Saved calibration cache cannot be reloaded')
 
-        # Second request: no reference path at all. It must hit the cache.
         source2=inputs/'製品 キャッシュ試験.wav';sf.write(source2,p01core._fixture_source(),48000,subtype='DOUBLE')
         session2=root/'session_cache_hit';m2=request._body([source2],None,targets,False,work,session2,expected_reference_sha=ref_sha,cache_ready=True)
         p2=root/'request_cache.json';request.write_manifest(p2,m2)
@@ -110,7 +108,7 @@ def self_test(destination):
             observer_runtime_manifest_sha256=obs.get('runtime_manifest_sha256'),source_unchanged=True,stem_audio_in_master=False,runtime_model_download=False,
             canonical_reference_used=False,fixture_reference_sha256=ref_sha,calibration_single_pass_parity=True,parity_calibration_sha256=parity_sha,
             cache_bootstrap_state=final['calibration_cache']['state'],cache_second_request_state=final2['calibration_cache']['state'],reference_free_second_request=True,
-            target_contract=dict(lufs_step_db=.5,tp_max_dbtp=-.5,off_grid_lufs_rejected=True,tp_above_max_rejected=True),
+            target_contract=dict(lufs_step_db=.5,tp_step_db=.5,tp_max_dbtp=-.5,off_grid_lufs_rejected=True,off_grid_tp_rejected=True,tp_above_max_rejected=True,defaults=targets.to_dict()),
             targets=targets.to_dict(),master_metrics=mm,codec_metrics=cm,product_worker=worker.VERSION,product_runtime=request.VERSION,
-            scope='generated-audio frozen distribution/cache/target-contract self-test; not listening acceptance')
+            scope='generated-audio frozen distribution/cache/default-target-contract self-test; not listening acceptance')
         (dest/'P08_PRODUCT_SELFTEST.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8');return summary

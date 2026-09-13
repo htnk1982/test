@@ -49,6 +49,22 @@ class RuntimeContracts(unittest.TestCase):
     def test_status_identity(self):
         g.StatusProgress(self.session,self.m['sha256'])
         with self.assertRaises(ValueError):g.read_status(self.session,'b'*64)
+    def test_status_transient_permission_retry(self):
+        g.StatusProgress(self.session,self.m['sha256']);calls=[]
+        def flaky(path):
+            calls.append(1)
+            if len(calls)<=3:raise PermissionError(13,'synthetic transient lock',str(path))
+            return Path(path).read_text(encoding='utf-8')
+        got=g.read_status(self.session,self.m['sha256'],reader=flaky,retry_seconds=.2,retry_sleep=.001)
+        self.assertEqual(got['overall'],'RUNNING');self.assertEqual(len(calls),4)
+    def test_status_partial_json_retry(self):
+        g.StatusProgress(self.session,self.m['sha256']);calls=[]
+        def partial_then_valid(path):
+            calls.append(1)
+            if len(calls)<=2:return '{'
+            return Path(path).read_text(encoding='utf-8')
+        got=g.read_status(self.session,self.m['sha256'],reader=partial_then_valid,retry_seconds=.2,retry_sleep=.001)
+        self.assertEqual(got['overall'],'RUNNING');self.assertEqual(len(calls),3)
     def test_cancel_is_durable_file(self):self.assertTrue(g.request_cancel(self.session).read_text().startswith('cancel'))
     def test_processor_receives_exact_targets_and_replace(self):
         expected=Targets(wav_lufs=-13,wav_tp=-2.5,mp3_lufs=-15,mp3_tp=-3)

@@ -1,16 +1,17 @@
-"""P08 product-candidate worker.
+"""P08 product-candidate worker with sealed calibration reuse.
 
-The canonical reference is decoded once per batch, calibration is built once,
-and one persistent isolated Spleeter observer is reused across tracks. Normal
-CLI execution accepts only the canonical historical reference.zip and resolves
-the observer runtime beside the frozen product. Alternate reference/runtime
-identities are available only to imported acceptance-verifier calls.
+The canonical calibration is no longer recomputed for every batch. Normal runs
+load the accepted local cache and go directly to song processing. If the cache
+does not yet exist, one canonical reference.zip bootstrap is allowed: references
+are decoded locally, a single shared feature pass builds the exact v51 calibration,
+and the result is cached only if its SHA equals the privately accepted P01 SHA.
 """
 from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import argparse,json,sys,traceback
 
+import accepted_calibration_cache_v53 as calcache
 import automatic_joint_v51 as planner51
 import gui_runtime_v44 as gui44
 import p01_private_calibration_bootstrap as refadapt
@@ -19,122 +20,95 @@ import product_processed_v52 as product
 from spleeter_observer_adapter_v48 import SpleeterRuntimeObserver
 from target_settings import Targets
 
-VERSION='product-worker-0.1.0'
+VERSION='product-worker-0.2.0'
 
 
 def bundle_root():
-    if getattr(sys,'frozen',False):
-        return Path(sys.executable).resolve().parent
+    if getattr(sys,'frozen',False):return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
 
-
-def runtime_root():
-    return bundle_root()/'PDRM_OBSERVER_RUNTIME'
-
+def runtime_root():return bundle_root()/'PDRM_OBSERVER_RUNTIME'
 
 def _read(path,expected_reference_sha=None):
-    if expected_reference_sha is None:
-        return request.read_manifest(path)
+    if expected_reference_sha is None:return request.read_manifest(path)
     return request._read_manifest(path,expected_reference_sha=expected_reference_sha)
 
-
 def _references(reference,temp,*,allow_fixture_reference=False):
-    if not allow_fixture_reference:
-        return refadapt._reference_files(reference,temp)
-    old=refadapt._SELFTEST_REFERENCE
-    refadapt._SELFTEST_REFERENCE=True
-    try:
-        return refadapt._reference_files(reference,temp)
-    finally:
-        refadapt._SELFTEST_REFERENCE=old
+    if not allow_fixture_reference:return refadapt._reference_files(reference,temp)
+    old=refadapt._SELFTEST_REFERENCE;refadapt._SELFTEST_REFERENCE=True
+    try:return refadapt._reference_files(reference,temp)
+    finally:refadapt._SELFTEST_REFERENCE=old
 
 
 def run_manifest(path,*,runtime_override=None,expected_reference_sha=None,
-                 allow_fixture_reference=False):
+                 allow_fixture_reference=False,cache_root_override=None):
     """Run a sealed batch. Override arguments are for imported CI verifier only."""
     manifest=None;session=None;status=None;observer=None
     try:
         manifest=_read(path,expected_reference_sha)
-        targets=Targets.from_fields(manifest['targets'])
-        sources=[Path(p) for p in manifest['sources']]
+        targets=Targets.from_fields(manifest['targets']);sources=[Path(p) for p in manifest['sources']]
         work=Path(manifest['work_root']).absolute();work.mkdir(parents=True,exist_ok=True)
-        session=Path(manifest['session_dir']).absolute()
-        status=gui44.StatusProgress(session,manifest['sha256'])
-        status.file_total=len(sources)
+        session=Path(manifest['session_dir']).absolute();status=gui44.StatusProgress(session,manifest['sha256']);status.file_total=len(sources)
+        ref_sha=manifest['reference_sha256'];expected_cal=manifest.get('calibration_sha256')
+        status.set('REFERENCE_CALIBRATION_CACHE_CHECK',0,1)
+        calibration=calcache.load(ref_sha,expected_calibration_sha=expected_cal,root=cache_root_override)
+        cache_state='HIT' if calibration is not None else 'MISS'
+        if calibration is None:
+            if manifest.get('reference_mode')!=request.BOOTSTRAP_MODE:
+                raise RuntimeError('Accepted calibration cache is missing or invalid; restart and select canonical reference.zip once')
+            status.set('REFERENCE_LOCAL_DECODE_ONCE',0,1)
+            with TemporaryDirectory(prefix='p08_reference_',dir=work) as ref_td:
+                refs=_references(Path(manifest['reference_zip']),Path(ref_td),allow_fixture_reference=allow_fixture_reference)
+                if len(refs)!=24:raise RuntimeError('Accepted calibration requires exactly 24 references')
+                specs=[dict(path=p,role='bass',quality='positive') for p in refs]
+                status.set('REFERENCE_CALIBRATION_BUILD_ONCE',0,len(refs))
+                calibration=calcache.build_calibration(specs,status)
+            if expected_cal is not None and calibration.get('sha256')!=expected_cal:
+                raise RuntimeError('One-time calibration did not reproduce the accepted P01 calibration SHA')
+            calcache.save(calibration,ref_sha,expected_calibration_sha=expected_cal,root=cache_root_override)
+            cache_state='BUILT_AND_SAVED'
+        status.set('REFERENCE_CALIBRATION_READY',1,1)
 
-        status.set('REFERENCE_LOCAL_DECODE',0,1)
-        with TemporaryDirectory(prefix='p08_reference_',dir=work) as ref_td, \
-             TemporaryDirectory(prefix='p08_observer_',dir=work) as observer_td:
-            refs=_references(Path(manifest['reference_zip']),Path(ref_td),
-                             allow_fixture_reference=allow_fixture_reference)
-            if len(refs)!=24:
-                raise RuntimeError('Accepted calibration requires exactly 24 references')
-            status.set('REFERENCE_CALIBRATION',0,1)
-            specs=[dict(path=p,role='bass',quality='positive') for p in refs]
-            calibration=planner51.make_calibration(specs)
-            status.set('REFERENCE_CALIBRATION',1,1)
-
+        with TemporaryDirectory(prefix='p08_observer_',dir=work) as observer_td:
             runtime=Path(runtime_override).absolute() if runtime_override is not None else runtime_root()
-            if not runtime.is_dir():
-                raise RuntimeError('Bundled PDRM_OBSERVER_RUNTIME is missing')
+            if not runtime.is_dir():raise RuntimeError('Bundled PDRM_OBSERVER_RUNTIME is missing')
             observer=SpleeterRuntimeObserver(runtime,work_root=Path(observer_td),timeout=600)
-            planner=planner51.AutomaticJointPlanner(calibration,observer)
-            planner.preflight()
-            identity=planner.identity()
-            if identity.get('planner_id')!=planner51.VERSION:
-                raise RuntimeError('Unexpected product planner identity')
-
+            planner=planner51.AutomaticJointPlanner(calibration,observer);planner.preflight();identity=planner.identity()
+            if identity.get('planner_id')!=planner51.VERSION:raise RuntimeError('Unexpected product planner identity')
+            if expected_cal is not None and identity.get('calibration_sha256')!=expected_cal:
+                raise RuntimeError('Planner did not bind the accepted calibration')
             render_root=work/'renders';render_root.mkdir(parents=True,exist_ok=True)
             for i,source in enumerate(sources,1):
                 status.set_file(i,len(sources),source)
                 try:
-                    result,_=product.run_file(
-                        source,render_root,planner=planner,targets=targets,
+                    result,_=product.run_file(source,render_root,planner=planner,targets=targets,
                         replace_managed=manifest['replace_managed'],progress=status)
-                    if (result.get('product_candidate') is not True or
-                            result.get('render_backend')!='joint-v46' or
-                            result.get('finalizer')!='auto-peak-v3.4.0'):
+                    if (result.get('product_candidate') is not True or result.get('render_backend')!='joint-v46' or result.get('finalizer')!='auto-peak-v3.4.0'):
                         raise RuntimeError('Product candidate identity not preserved')
                     status.success(source,result)
-                except InterruptedError:
-                    raise
-                except Exception as exc:
-                    status.failure(source,exc)
+                except InterruptedError:raise
+                except Exception as exc:status.failure(source,exc)
             final=status.finish('COMPLETE_WITH_ERRORS' if status.failures else 'COMPLETE')
-            final['planner_identity']=identity
-            final['product_worker_version']=VERSION
-            gui44.atomic_json(session/'product_summary.json',final)
-            return final
+            final['planner_identity']=identity;final['product_worker_version']=VERSION
+            final['calibration_cache']=dict(state=cache_state,version=calcache.VERSION,reference_sha256=ref_sha,
+                calibration_sha256=calibration['sha256'],reference_audio_embedded=False)
+            gui44.atomic_json(session/'product_summary.json',final);return final
     except InterruptedError as exc:
-        if status is None:
-            raise
-        final=status._write('CANCELLED',0,1,'CANCELLED',cancel_reason=str(exc))
-        gui44.atomic_json(session/'product_summary.json',dict(final,product_worker_version=VERSION))
-        return final
+        if status is None:raise
+        final=status._write('CANCELLED',0,1,'CANCELLED',cancel_reason=str(exc));gui44.atomic_json(session/'product_summary.json',dict(final,product_worker_version=VERSION));return final
     except Exception as exc:
-        failure=dict(
-            schema=1,version=VERSION,error_type=type(exc).__name__,error=str(exc),
-            traceback=traceback.format_exc(),
-            manifest_sha256=(manifest or {}).get('sha256'),
-        )
-        if session is not None:
-            gui44.atomic_json(session/'PRODUCT_FAILURE.json',failure)
+        failure=dict(schema=1,version=VERSION,error_type=type(exc).__name__,error=str(exc),traceback=traceback.format_exc(),manifest_sha256=(manifest or {}).get('sha256'))
+        if session is not None:gui44.atomic_json(session/'PRODUCT_FAILURE.json',failure)
         if status is not None:
-            status.failures.append(dict(file=status.current_file,error_type=type(exc).__name__,error=str(exc)))
-            status._write('FAILED',0,1,'FAILED')
+            status.failures.append(dict(file=status.current_file,error_type=type(exc).__name__,error=str(exc)));status._write('FAILED',0,1,'FAILED')
         raise
     finally:
-        if observer is not None:
-            observer.close()
+        if observer is not None:observer.close()
 
 
 def main(argv=None):
     p=argparse.ArgumentParser();p.add_argument('--worker-manifest',type=Path,required=True);a=p.parse_args(argv)
-    result=run_manifest(a.worker_manifest)
-    return 0 if result['overall'] in ('COMPLETE','COMPLETE_WITH_ERRORS','CANCELLED') else 1
-
+    result=run_manifest(a.worker_manifest);return 0 if result['overall'] in ('COMPLETE','COMPLETE_WITH_ERRORS','CANCELLED') else 1
 
 if __name__=='__main__':
-    import multiprocessing
-    multiprocessing.freeze_support()
-    raise SystemExit(main())
+    import multiprocessing;multiprocessing.freeze_support();raise SystemExit(main())

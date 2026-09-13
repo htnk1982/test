@@ -6,7 +6,7 @@ from tkinter import ttk
 import gui_runtime_v44 as runtime
 from natural_gui_v34 import TargetDialog,choose_targets
 
-VERSION='natural-gui-v4.4-lab'
+VERSION='natural-gui-v4.4.1'
 FINAL={'COMPLETE','COMPLETE_WITH_ERRORS','CANCELLED','FAILED'}
 
 class ProgressDialog:
@@ -23,8 +23,14 @@ class ProgressDialog:
         self.detail=tk.StringVar(root,value='');ttk.Label(outer,textvariable=self.detail,wraplength=560).grid(row=4,column=0,columnspan=2,sticky='w',pady=(8,0))
         root.bind('<Escape>',lambda e:self.cancel());root.update_idletasks();w,h=root.winfo_reqwidth(),root.winfo_reqheight();root.geometry(f'{w}x{h}+{max(0,(root.winfo_screenwidth()-w)//2)}+{max(0,(root.winfo_screenheight()-h)//2)}')
         root.after(self.poll_ms,self.poll)
+    def _destroy(self):
+        try:self.root.destroy()
+        except tk.TclError:pass
     def cancel(self):
-        if self.closed or self.cancel_sent:return
+        # Once the worker is finished, the window-close action must close the UI,
+        # not silently return because there is nothing left to cancel.
+        if self.closed:self._destroy();return
+        if self.cancel_sent:return
         runtime.request_cancel(self.session);self.cancel_sent=True;self.cancel_button.state(['disabled']);self.detail.set('キャンセル要求を送信しました。現在の安全な処理点で停止します。')
     def poll(self):
         if self.closed:return
@@ -38,7 +44,18 @@ class ProgressDialog:
             try:status=runtime.read_status(self.session,self.manifest_hash)
             except Exception:status=None
             if not status or status['overall'] not in FINAL:
-                self.finish(dict(overall='FAILED',stage='WORKER_EXIT',failures=[dict(error=f'worker exit code {code}')],file_index=0,file_total=0,current_file=None,done=0,total=1));return
+                last=status or self.last or {}
+                failed=dict(
+                    overall='FAILED',stage='WORKER_EXIT',worker_exit_code=int(code),
+                    last_stage=last.get('stage'),last_done=last.get('done'),last_total=last.get('total'),
+                    file_index=last.get('file_index',0),file_total=last.get('file_total',0),
+                    current_file=last.get('current_file'),done=last.get('done',0),total=last.get('total',1),
+                    completed=last.get('completed',[]),
+                    failures=[dict(error=f'worker exit code {code}',last_stage=last.get('stage'))],
+                )
+                try:runtime.atomic_json(self.session/'GUI_WORKER_EXIT.json',failed)
+                except Exception as exc:failed['diagnostic_write_error']=repr(exc)
+                self.finish(failed);return
             self.finish(status);return
         self.root.after(self.poll_ms,self.poll)
     def render(self,s):
@@ -53,8 +70,11 @@ class ProgressDialog:
         if status.get('overall')=='COMPLETE':self.detail.set('すべての音源を完了しました。')
         elif status.get('overall')=='COMPLETE_WITH_ERRORS':self.detail.set('完了しましたが、保存できなかった音源があります。')
         elif status.get('overall')=='CANCELLED':self.detail.set('キャンセルしました。')
-        else:self.detail.set('処理workerが異常終了しました。ログを確認してください。')
+        else:self.detail.set('処理workerが異常終了しました。診断情報を保存しました。')
         if self.on_done:self.on_done(status)
+        # on_done may display a modal message box. After it returns, terminate the
+        # progress window/mainloop deterministically on both success and failure.
+        self._destroy()
 
 def progress_self_check(output):
     """Tk scheduling check only; subprocess/real-chain checks live elsewhere."""
@@ -67,13 +87,11 @@ def progress_self_check(output):
         runtime.atomic_json(session/'status.json',status)
         root=tk.Tk();root.withdraw();calls=[];dialog=ProgressDialog(root,Alive(),session,h,on_done=lambda s:calls.append(s),poll_ms=10)
         ticks=[];root.after(5,lambda:ticks.append('responsive'))
-        # after() uses wall/monotonic time. A zero-sleep update loop can finish
-        # before 5 ms on a fast Windows runner and is not a responsiveness test.
         deadline=time.monotonic()+.25
         while time.monotonic()<deadline and (not ticks or not dialog.title.get().endswith('test.wav')):
             root.update();time.sleep(.002)
         dialog.poll();assert ticks and dialog.title.get().endswith('test.wav') and abs(float(dialog.bar['value'])-25)<1e-9
         status.update(overall='COMPLETE',stage='COMPLETE',done=1,total=1,completed=[dict(file='test.wav',status='COMPLETE')])
         runtime.atomic_json(session/'status.json',status);dialog.poll();assert dialog.closed and calls[-1]['overall']=='COMPLETE'
-        root.destroy();Path(output).write_text(json.dumps(dict(status='PASS',responsive_callbacks=True,progress_poll=True,cancel_control=True,targets_reused_from='natural_gui_v34'),indent=2),encoding='utf-8')
+        Path(output).write_text(json.dumps(dict(status='PASS',responsive_callbacks=True,progress_poll=True,cancel_control=True,finished_window_closes=True,abrupt_exit_diagnostic='GUI_WORKER_EXIT.json',targets_reused_from='natural_gui_v34'),indent=2),encoding='utf-8')
     return 0

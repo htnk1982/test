@@ -8,11 +8,13 @@ import os
 import tempfile
 import unicodedata
 
+SETTINGS_SCHEMA=2
 LUFS_MIN=-30.0
 LUFS_MAX=-8.0
 LUFS_STEP=0.5
 TP_MIN=-12.0
 TP_MAX=-0.5
+TP_STEP=0.5
 
 
 def _on_grid(value,step):
@@ -22,10 +24,10 @@ def _on_grid(value,step):
 
 @dataclass(frozen=True)
 class Targets:
-    wav_lufs: float = -12.0
-    wav_tp: float = -2.0
+    wav_lufs: float = -10.0
+    wav_tp: float = -0.5
     mp3_lufs: float = -14.0
-    mp3_tp: float = -2.0
+    mp3_tp: float = -1.0
 
     def validate(self):
         for name, value in asdict(self).items():
@@ -39,6 +41,8 @@ class Targets:
             else:
                 if not TP_MIN <= value <= TP_MAX:
                     raise ValueError(f'{name[:3].upper()} True Peak上限 (dBTP): {TP_MIN:g}〜{TP_MAX:g}の範囲で指定してください。')
+                if not _on_grid(value,TP_STEP):
+                    raise ValueError(f'{name[:3].upper()} True Peak上限: {TP_STEP:g} dB刻みで指定してください。')
         return self
 
     def to_dict(self):
@@ -73,11 +77,11 @@ def load_settings(path=None):
         return Targets(), ''
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
-        if data.get('schema') != 1:
-            raise ValueError('Unknown settings schema')
+        if data.get('schema') != SETTINGS_SCHEMA:
+            raise ValueError('Settings defaults changed')
         return Targets.from_fields(data['targets']), ''
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        return Targets(), '保存設定を読み込めませんでした。初期値を表示しています。'
+        return Targets(), '出力条件の初期値が更新されたため、新しい初期値を表示しています。'
 
 
 def save_settings(targets, path=None):
@@ -87,7 +91,7 @@ def save_settings(targets, path=None):
     fd, name = tempfile.mkstemp(prefix='.settings_', dir=path.parent)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(dict(schema=1, targets=values), f, ensure_ascii=False, indent=2, allow_nan=False)
+            json.dump(dict(schema=SETTINGS_SCHEMA, targets=values), f, ensure_ascii=False, indent=2, allow_nan=False)
             f.flush(); os.fsync(f.fileno())
         os.replace(name, path)
     finally:

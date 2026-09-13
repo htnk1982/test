@@ -1,0 +1,65 @@
+name: PDRM P08 Delivered EXE Debug
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - '.github/workflows/pdrm-p08-roundtrip-debug.yml'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  debug-delivered-exe:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+      TF_CPP_MIN_LOG_LEVEL: '2'
+      OMP_NUM_THREADS: '2'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pdrm-P08-product-candidate
+          path: 'delivered_日本語 空白_P08'
+          repository: htnk1982/test
+          run-id: 34740096874
+          github-token: ${{ github.token }}
+      - name: Inspect delivered bundle and process behavior
+        shell: pwsh
+        run: |
+          $root = Join-Path $PWD 'delivered_日本語 空白_P08'
+          $out = Join-Path $PWD 'P08_DELIVERED_DEBUG'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          "ROOT=$root" | Set-Content -LiteralPath (Join-Path $out 'debug.txt') -Encoding utf8
+          Get-ChildItem -LiteralPath $root -Force | Select-Object Name,Length,Mode | Format-Table -AutoSize | Out-String | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          $exe = Join-Path $root 'PDRM.exe'
+          $pre = Join-Path $root 'precomputed_calibration_v54.json'
+          "EXE_EXISTS=$(Test-Path -LiteralPath $exe -PathType Leaf)" | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          "PRECOMPUTED_EXISTS=$(Test-Path -LiteralPath $pre -PathType Leaf)" | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          if (Test-Path -LiteralPath $pre) { "PRE_SHA=$((Get-FileHash -LiteralPath $pre -Algorithm SHA256).Hash.ToLower())" | Add-Content -LiteralPath (Join-Path $out 'debug.txt') }
+          & $exe --help *> (Join-Path $out 'help.txt')
+          "HELP_EXIT=$LASTEXITCODE" | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          $self = Join-Path $out 'selftest'
+          New-Item -ItemType Directory -Path $self -Force | Out-Null
+          $stdout = Join-Path $out 'selftest.stdout.txt'
+          $stderr = Join-Path $out 'selftest.stderr.txt'
+          $p = Start-Process -FilePath $exe -ArgumentList @('--self-test','--self-test-output',$self) -WorkingDirectory $root -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -Wait
+          "SELFTEST_EXIT=$($p.ExitCode)" | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          Start-Sleep -Seconds 3
+          "--- REMAINING PDRM PROCESSES ---" | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'PDRM.exe' } | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List | Out-String | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          "--- SELFTEST OUTPUT FILES ---" | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          Get-ChildItem -LiteralPath $self -Force -Recurse -ErrorAction SilentlyContinue | Select-Object FullName,Length | Format-Table -AutoSize | Out-String | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          $failure = Join-Path $self 'P08_PRODUCT_SELFTEST_FAILURE.json'
+          if (Test-Path -LiteralPath $failure) { Get-Content -LiteralPath $failure -Raw | Set-Content -LiteralPath (Join-Path $out 'failure_copy.json') -Encoding utf8 }
+          "--- APPLICATION EVENTS ---" | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-5)} -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'PDRM|python|ucrtbase|VCRUNTIME' } | Select-Object -First 20 TimeCreated,Id,ProviderName,LevelDisplayName,Message | Format-List | Out-String | Add-Content -LiteralPath (Join-Path $out 'debug.txt')
+          Get-Content -LiteralPath (Join-Path $out 'debug.txt') -Raw
+          if (Test-Path -LiteralPath $stdout) { Write-Host '--- STDOUT ---'; Get-Content -LiteralPath $stdout -Raw }
+          if (Test-Path -LiteralPath $stderr) { Write-Host '--- STDERR ---'; Get-Content -LiteralPath $stderr -Raw }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdrm-P08-delivered-exe-debug
+          path: P08_DELIVERED_DEBUG
+          retention-days: 7
+          if-no-files-found: error

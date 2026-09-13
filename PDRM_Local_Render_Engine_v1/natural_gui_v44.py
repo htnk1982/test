@@ -6,13 +6,13 @@ from tkinter import ttk
 import gui_runtime_v44 as runtime
 from natural_gui_v34 import TargetDialog,choose_targets
 
-VERSION='natural-gui-v4.4.1'
+VERSION='natural-gui-v4.4.2'
 FINAL={'COMPLETE','COMPLETE_WITH_ERRORS','CANCELLED','FAILED'}
 
 class ProgressDialog:
     def __init__(self,root,process,session,manifest_hash,on_done=None,poll_ms=100):
         self.root=root;self.process=process;self.session=Path(session);self.manifest_hash=manifest_hash
-        self.on_done=on_done;self.poll_ms=poll_ms;self.closed=False;self.cancel_sent=False;self.last=None
+        self.on_done=on_done;self.poll_ms=poll_ms;self.closed=False;self.cancel_sent=False;self.last=None;self.last_status_error=None
         root.title('PDRM — 処理進捗');root.resizable(False,False);root.protocol('WM_DELETE_WINDOW',self.cancel)
         outer=ttk.Frame(root,padding=18);outer.grid(sticky='nsew')
         self.title=tk.StringVar(root,value='開始中…');ttk.Label(outer,textvariable=self.title,font=('Yu Gothic UI',13,'bold'),wraplength=560).grid(row=0,column=0,columnspan=2,sticky='w')
@@ -32,32 +32,43 @@ class ProgressDialog:
         if self.closed:self._destroy();return
         if self.cancel_sent:return
         runtime.request_cancel(self.session);self.cancel_sent=True;self.cancel_button.state(['disabled']);self.detail.set('キャンセル要求を送信しました。現在の安全な処理点で停止します。')
+    def _exit_failure(self,code,status=None,status_error=None):
+        last=status or self.last or {}
+        err=f'worker exit code {code}'
+        if status_error is not None:err+=f'; final status unreadable: {status_error}'
+        failed=dict(
+            overall='FAILED',stage='WORKER_EXIT',worker_exit_code=int(code),
+            last_stage=last.get('stage'),last_done=last.get('done'),last_total=last.get('total'),
+            file_index=last.get('file_index',0),file_total=last.get('file_total',0),
+            current_file=last.get('current_file'),done=last.get('done',0),total=last.get('total',1),
+            completed=last.get('completed',[]),
+            failures=[dict(error=err,last_stage=last.get('stage'))],
+        )
+        try:runtime.atomic_json(self.session/'GUI_WORKER_EXIT.json',failed)
+        except Exception as exc:failed['diagnostic_write_error']=repr(exc)
+        return failed
     def poll(self):
         if self.closed:return
+        status=None;status_error=None
         try:status=runtime.read_status(self.session,self.manifest_hash)
-        except Exception as exc:self.finish(dict(overall='FAILED',stage='STATUS_ERROR',failures=[dict(error=str(exc))]));return
+        except Exception as exc:
+            # Progress telemetry is not the processing authority. A transient
+            # Windows file lock must never terminate a still-running DSP worker.
+            status_error=exc;self.last_status_error=repr(exc)
         if status:
-            self.last=status;self.render(status)
+            self.last=status;self.last_status_error=None;self.render(status)
             if status['overall'] in FINAL:self.finish(status);return
         code=self.process.poll()
-        if code is not None:
-            try:status=runtime.read_status(self.session,self.manifest_hash)
-            except Exception:status=None
-            if not status or status['overall'] not in FINAL:
-                last=status or self.last or {}
-                failed=dict(
-                    overall='FAILED',stage='WORKER_EXIT',worker_exit_code=int(code),
-                    last_stage=last.get('stage'),last_done=last.get('done'),last_total=last.get('total'),
-                    file_index=last.get('file_index',0),file_total=last.get('file_total',0),
-                    current_file=last.get('current_file'),done=last.get('done',0),total=last.get('total',1),
-                    completed=last.get('completed',[]),
-                    failures=[dict(error=f'worker exit code {code}',last_stage=last.get('stage'))],
-                )
-                try:runtime.atomic_json(self.session/'GUI_WORKER_EXIT.json',failed)
-                except Exception as exc:failed['diagnostic_write_error']=repr(exc)
-                self.finish(failed);return
-            self.finish(status);return
-        self.root.after(self.poll_ms,self.poll)
+        if code is None:
+            if status_error is not None:self.detail.set('進捗情報を再取得中… 処理自体は継続しています。')
+            self.root.after(self.poll_ms,self.poll);return
+        # Worker has actually exited. Give the terminal status one longer final
+        # chance to become readable before deciding from the process exit itself.
+        try:final_status=runtime.read_status(self.session,self.manifest_hash,retry_seconds=1.0)
+        except Exception as exc:
+            final_status=None;status_error=exc
+        if final_status and final_status.get('overall') in FINAL:self.finish(final_status);return
+        self.finish(self._exit_failure(code,final_status or status,status_error));return
     def render(self,s):
         current=s.get('current_file') or '準備中';self.title.set(f"[{s.get('file_index',0)}/{s.get('file_total',0)}] {current}")
         self.stage.set(str(s.get('stage','')));total=max(0,int(s.get('total',0)));done=max(0,int(s.get('done',0)))
@@ -93,5 +104,5 @@ def progress_self_check(output):
         dialog.poll();assert ticks and dialog.title.get().endswith('test.wav') and abs(float(dialog.bar['value'])-25)<1e-9
         status.update(overall='COMPLETE',stage='COMPLETE',done=1,total=1,completed=[dict(file='test.wav',status='COMPLETE')])
         runtime.atomic_json(session/'status.json',status);dialog.poll();assert dialog.closed and calls[-1]['overall']=='COMPLETE'
-        Path(output).write_text(json.dumps(dict(status='PASS',responsive_callbacks=True,progress_poll=True,cancel_control=True,finished_window_closes=True,abrupt_exit_diagnostic='GUI_WORKER_EXIT.json',targets_reused_from='natural_gui_v34'),indent=2),encoding='utf-8')
+        Path(output).write_text(json.dumps(dict(status='PASS',responsive_callbacks=True,progress_poll=True,cancel_control=True,finished_window_closes=True,telemetry_error_nonfatal_while_worker_alive=True,abrupt_exit_diagnostic='GUI_WORKER_EXIT.json',targets_reused_from='natural_gui_v34'),indent=2),encoding='utf-8')
     return 0

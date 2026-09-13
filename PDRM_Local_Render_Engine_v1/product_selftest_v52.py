@@ -1,8 +1,9 @@
 """Generated-audio self-test for the frozen P08 product candidate.
 
 The test proves that the product ships a valid precomputed calibration, installs
-it without any reference path, reuses it on the second request, and honors the
-current 0.5 dB target grid/defaults. No user/private/reference audio enters CI.
+it without any reference path, reuses it on the second request, honors the
+current 0.5 dB target grid/defaults, and survives transient Windows contention
+on progress telemetry. No user/private/reference audio enters CI.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -10,13 +11,14 @@ import json,sys,tempfile
 import soundfile as sf
 
 import accepted_calibration_cache_v53 as calcache
+import gui_runtime_v44 as gui44
 import p01_private_calibration_entry as p01core
 import product_gui_runtime_v52 as request
 import product_worker_v52 as worker
 from integration_contract_v40 import file_hash
 from target_settings import Targets
 
-VERSION='product-selftest-0.5.0'
+VERSION='product-selftest-0.6.0'
 
 
 def _target_contract():
@@ -34,10 +36,24 @@ def _target_contract():
     return defaults
 
 
+def _status_retry_contract(root):
+    session=root/'status_retry';session.mkdir();h='c'*64
+    record=dict(schema=1,version=gui44.VERSION,manifest_sha256=h,overall='RUNNING',stage='OPPO_WINDOW',done=7,total=10,file_index=1,file_total=1,current_file='fixture.wav',completed=[],failures=[],updated_unix=0)
+    gui44.atomic_json(session/'status.json',record);attempts=[]
+    def flaky(path):
+        attempts.append(len(attempts)+1)
+        if len(attempts)<=3:raise PermissionError(13,'synthetic transient status lock',str(path))
+        return Path(path).read_text(encoding='utf-8')
+    got=gui44.read_status(session,h,reader=flaky,retry_seconds=.25,retry_sleep=.001)
+    if got.get('stage')!='OPPO_WINDOW' or len(attempts)!=4:raise RuntimeError('Transient status-read recovery contract failed')
+    return len(attempts)
+
+
 def self_test(destination):
     dest=Path(destination).resolve();dest.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='p08_frozen_selftest_') as td:
         root=Path(td);inputs=root/'日本語 空白 入力';inputs.mkdir();work=root/'work';session=root/'session';cache_root=root/'calibration_cache';targets=_target_contract()
+        status_attempts=_status_retry_contract(root)
 
         # Validate shipped derived metadata before any worker process uses it.
         precomputed=calcache.read_precomputed()
@@ -76,8 +92,9 @@ def self_test(destination):
             success=True,version=VERSION,frozen=bool(getattr(sys,'frozen',False)),executable=str(Path(sys.executable).resolve()),
             planner_id=ident['planner_id'],calibration_sha256=ident.get('calibration_sha256'),p01_accepted_calibration_sha256=calcache.P01_ACCEPTED_CALIBRATION_SHA256,
             precomputed_calibration_valid=True,precomputed_install_state=final['calibration_cache']['state'],cache_second_request_state=final2['calibration_cache']['state'],reference_free_product_request=True,reference_audio_bundled=False,reference_audio_required=False,
+            status_read_retry=True,status_read_retry_attempts=status_attempts,status_runtime_version=gui44.VERSION,
             observer_provider=obs['provider'],observer_runtime_manifest_sha256=obs.get('runtime_manifest_sha256'),source_unchanged=True,stem_audio_in_master=False,runtime_model_download=False,
             target_contract=dict(lufs_step_db=.5,tp_step_db=.5,tp_max_dbtp=-.5,off_grid_lufs_rejected=True,off_grid_tp_rejected=True,tp_above_max_rejected=True,defaults=targets.to_dict()),
             targets=targets.to_dict(),master_metrics=mm,codec_metrics=cm,product_worker=worker.VERSION,product_runtime=request.VERSION,
-            scope='generated-audio frozen distribution/precomputed-calibration/default-target-contract self-test; not listening acceptance')
+            scope='generated-audio frozen distribution/precomputed-calibration/status-telemetry/default-target-contract self-test; not listening acceptance')
         (dest/'P08_PRODUCT_SELFTEST.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8');return summary

@@ -13,6 +13,9 @@ on:
       - 'PDRM_Local_Render_Engine_v1/packaging/build_product_v52.py'
       - 'PDRM_Local_Render_Engine_v1/target_settings.py'
       - 'PDRM_Local_Render_Engine_v1/natural_gui_v34.py'
+      - 'PDRM_Local_Render_Engine_v1/natural_gui_v44.py'
+      - 'PDRM_Local_Render_Engine_v1/gui_runtime_v44.py'
+      - 'PDRM_Local_Render_Engine_v1/tests/test_gui_runtime_v44.py'
       - 'PDRM_Local_Render_Engine_v1/auto_peak_v34.py'
       - 'PDRM_Local_Render_Engine_v1/offline_peak_stream_v32.py'
       - 'PDRM_Local_Render_Engine_v1/distribution_peak.py'
@@ -57,6 +60,8 @@ jobs:
           python-version: '3.12'
       - name: Install frozen-main dependencies
         run: python -m pip install numpy==2.3.5 scipy==1.17.0 soundfile==0.13.1 pyloudnorm==0.2.0 imageio-ffmpeg==0.6.0 psutil==7.0.0 pyinstaller==6.16.0
+      - name: Unit-test GUI status telemetry resilience
+        run: python -m unittest tests.test_gui_runtime_v44 -v
       - name: Build and execute frozen product/precomputed-calibration self-test
         run: python packaging/build_product_v52.py
       - name: Assert distributable candidate before upload
@@ -80,6 +85,7 @@ jobs:
           if (!$st.source_unchanged -or $st.stem_audio_in_master) { throw 'frozen audio safety invariant failed' }
           if (!$st.precomputed_calibration_valid -or !$st.reference_free_product_request -or $st.reference_audio_bundled -or $st.reference_audio_required) { throw 'precomputed reference-free calibration path failed' }
           if ($st.precomputed_install_state -ne 'PRECOMPUTED_INSTALLED' -or $st.cache_second_request_state -ne 'HIT') { throw 'precomputed calibration cache install/reuse failed' }
+          if (!$st.status_read_retry -or $st.status_read_retry_attempts -lt 4 -or $st.status_runtime_version -ne 'gui-runtime-v0.2.2') { throw 'status telemetry resilience contract failed' }
           if ($st.target_contract.lufs_step_db -ne 0.5 -or $st.target_contract.tp_step_db -ne 0.5 -or $st.target_contract.tp_max_dbtp -ne -0.5 -or !$st.target_contract.off_grid_lufs_rejected -or !$st.target_contract.off_grid_tp_rejected -or !$st.target_contract.tp_above_max_rejected) { throw 'target contract failed' }
           if ($st.targets.wav_lufs -ne -10 -or $st.targets.mp3_lufs -ne -14 -or $st.targets.wav_tp -ne -0.5 -or $st.targets.mp3_tp -ne -1) { throw 'default target propagation failed' }
       - uses: actions/upload-artifact@v4
@@ -140,6 +146,7 @@ jobs:
           if ($st.planner_id -ne 'automatic-joint-lab-0.4.0' -or $st.observer_provider -ne 'spleeter_runtime48') { throw 'roundtrip product identity failed' }
           if (!$st.source_unchanged -or $st.stem_audio_in_master) { throw 'roundtrip product safety failed' }
           if (!$st.precomputed_calibration_valid -or !$st.reference_free_product_request -or $st.cache_second_request_state -ne 'HIT') { throw 'roundtrip precomputed calibration failed' }
+          if (!$st.status_read_retry -or $st.status_runtime_version -ne 'gui-runtime-v0.2.2') { throw 'roundtrip status telemetry resilience failed' }
           if ($st.target_contract.lufs_step_db -ne 0.5 -or $st.target_contract.tp_step_db -ne 0.5 -or $st.target_contract.tp_max_dbtp -ne -0.5) { throw 'roundtrip target contract failed' }
           if ($st.targets.wav_lufs -ne -10 -or $st.targets.mp3_lufs -ne -14 -or $st.targets.wav_tp -ne -0.5 -or $st.targets.mp3_tp -ne -1) { throw 'roundtrip default target propagation failed' }
           $st | ConvertTo-Json -Depth 10

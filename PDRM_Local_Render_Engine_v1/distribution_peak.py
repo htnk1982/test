@@ -122,7 +122,7 @@ def render_limited(source: Path, dest: Path, gain_db: float, limit_db: float,
 def fit(source: Path, dest: Path, work: Path, target: float, ceiling: float,
         ff: str, progress=None, cfg=PeakConfig()) -> dict:
     cfg.validate()
-    if not math.isfinite(target) or not -30 <= target <= -8 or not -12 <= ceiling <= -1:
+    if not math.isfinite(target) or not -30 <= target <= -8 or not -12 <= ceiling <= -.5:
         raise ValueError('Unsupported loudness/peak target')
     work.mkdir(parents=True, exist_ok=True)
     ident = dict(source=io.file_hash(source), version=VERSION, code=io.file_hash(__file__),

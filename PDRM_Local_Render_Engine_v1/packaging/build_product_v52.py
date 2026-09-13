@@ -1,9 +1,8 @@
 """Build the P08 Windows product candidate as one GUI/worker EXE plus observer runtime.
 
-No DSP thresholds are changed here. The frozen main excludes TensorFlow/Spleeter;
-those remain in the already accepted sibling CPython 3.11 observer capsule.
-The product persists only sealed derived calibration metadata after a one-time
-canonical-reference bootstrap; later runs skip reference decoding/calibration.
+No DSP thresholds are changed here. TensorFlow/Spleeter remains in the sibling
+CPython 3.11 observer capsule. Canonical reference calibration is precomputed
+outside the user PC and shipped only as sealed derived numerical metadata.
 """
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -27,8 +26,9 @@ def execute(command,log,cwd,env=None,timeout=2400):
 
 def main():
     if sys.platform!='win32':raise RuntimeError('Windows only')
-    runtime=ROOT/'P02_CAPSULE_WORK'/'PDRM_OBSERVER_RUNTIME'
+    runtime=ROOT/'P02_CAPSULE_WORK'/'PDRM_OBSERVER_RUNTIME';precomputed=ROOT/'precomputed_calibration_v54.json'
     if not runtime.is_dir():raise RuntimeError('Build Spleeter runtime first')
+    if not precomputed.is_file():raise RuntimeError('Precomputed calibration metadata missing')
     if OUT.exists():shutil.rmtree(OUT)
     if EVIDENCE.exists():shutil.rmtree(EVIDENCE)
     OUT.mkdir();EVIDENCE.mkdir()
@@ -39,7 +39,7 @@ def main():
     with TemporaryDirectory(prefix='pdrm_p08_product_build_') as td:
         build=Path(td);hooks=build/'hooks';hooks.mkdir();root_py=sorted(ROOT.glob('*.py'));modes={p.stem:'py' for p in root_py}
         (hooks/'hook-product_app_v52.py').write_text('module_collection_mode = '+repr(modes)+'\n',encoding='utf-8')
-        datas=[(str(p),'.') for p in root_py]
+        datas=[(str(p),'.') for p in root_py]+[(str(precomputed),'.')]
         for name in packages:datas.extend(copy_metadata(name))
         hidden=[
             'product_app_v52','product_worker_v52','product_gui_runtime_v52','product_processed_v52','product_selftest_v52','accepted_calibration_cache_v53',
@@ -55,17 +55,17 @@ def main():
         dist=build/'dist'/'PDRM_Windows';exe=dist/'PDRM.exe'
         if not exe.is_file():raise RuntimeError('Frozen PDRM product EXE missing')
         shutil.copytree(runtime,dist/'PDRM_OBSERVER_RUNTIME')
-        readme=f'''PDRM Windows Product Candidate v54\n=================================\nPlanner: {PLANNER}\nFinalizer: {FINALIZER}\nDefault WAV: -10 LUFS-I / -0.5 dBTP\nDefault MP3: -14 LUFS-I / -1.0 dBTP\nTarget adjustment step: 0.5 dB for both LUFS and TP\nBuild commit: {commit}\n\nDouble-click PDRM.exe and select one or more original WAV/FLAC files.\nOn the first run only, select the canonical reference.zip. PDRM builds the accepted calibration once, verifies its accepted SHA, and stores only sealed derived numerical metadata in LocalAppData.\nLater runs do not ask for reference.zip and do not run REFERENCE_CALIBRATION.\nThe first bootstrap also shares one feature scan between broad/context and relative calibration instead of scanning every reference twice.\nOriginal audio is never overwritten. Reference audio is not cached. Spleeter stems are analysis evidence only and are never exported or mixed into the master.\n'''
+        readme=f'''PDRM Windows Product Candidate v55\n=================================\nPlanner: {PLANNER}\nFinalizer: {FINALIZER}\nDefault WAV: -10 LUFS-I / -0.5 dBTP\nDefault MP3: -14 LUFS-I / -1.0 dBTP\nLUFS / TP adjustment: 0.5 dB steps\nBuild commit: {commit}\n\nDouble-click PDRM.exe and select one or more original WAV/FLAC files.\nNo reference.zip is required. The canonical 24-track calibration has already been computed and is shipped only as sealed derived numerical metadata. On first launch that metadata is copied into LocalAppData; reference audio is neither bundled nor decoded.\nOriginal audio is never overwritten. Spleeter stems are analysis evidence only and are never exported or mixed into the master.\nIf processing fails, PDRM writes PDRM_DIAGNOSTIC.zip in the session directory and closes cleanly after the error dialog.\n'''
         (dist/'README_PDRM.txt').write_text(readme,encoding='utf-8')
         isolated=build/'日本語 空白'/'PDRM 製品候補';isolated.parent.mkdir();shutil.copytree(dist,isolated);testout=EVIDENCE/'SELFTEST';testout.mkdir();env=dict(os.environ)
         for key in ('PYTHONPATH','PYTHONHOME','IMAGEIO_FFMPEG_EXE'):env.pop(key,None)
         env['PYTHONUTF8']='1';env['TF_CPP_MIN_LOG_LEVEL']='2';env['OMP_NUM_THREADS']='2'
         execute([str(isolated/'PDRM.exe'),'--self-test','--self-test-output',str(testout)],EVIDENCE/'SELFTEST.log',build,env,timeout=1800)
         summary=json.loads((testout/'P08_PRODUCT_SELFTEST.json').read_text(encoding='utf-8'))
-        required=(summary.get('success') and summary.get('frozen') and summary.get('planner_id')==PLANNER and summary.get('observer_provider')=='spleeter_runtime48' and summary.get('source_unchanged') and summary.get('stem_audio_in_master') is False and summary.get('calibration_single_pass_parity') and summary.get('cache_second_request_state')=='HIT' and summary.get('reference_free_second_request'))
-        if not required:raise RuntimeError('Frozen P08 product/cache self-test failed: '+json.dumps(summary))
+        required=(summary.get('success') and summary.get('frozen') and summary.get('planner_id')==PLANNER and summary.get('observer_provider')=='spleeter_runtime48' and summary.get('source_unchanged') and summary.get('stem_audio_in_master') is False and summary.get('precomputed_calibration_valid') and summary.get('reference_free_product_request'))
+        if not required:raise RuntimeError('Frozen P08 product/precomputed-calibration self-test failed: '+json.dumps(summary))
         final=OUT/'PDRM_Windows';shutil.copytree(dist,final)
-        report=dict(success=True,product_release=False,stage='P08_B_CANDIDATE_V54_TARGETS',commit=commit,planner=PLANNER,finalizer=FINALIZER,platform=platform.platform(),versions=versions,exe_sha256=sha(final/'PDRM.exe'),exe_bytes=(final/'PDRM.exe').stat().st_size,bundle_bytes=sum(p.stat().st_size for p in final.rglob('*') if p.is_file()),runtime_bytes=sum(p.stat().st_size for p in (final/'PDRM_OBSERVER_RUNTIME').rglob('*') if p.is_file()),runtime_manifest_sha256=summary.get('observer_runtime_manifest_sha256'),frozen_selftest=summary,private_audio_used=False,private_audio_upload_path=False,user_python_required=False,reference_audio_cached=False,accepted_calibration_cache=True)
+        report=dict(success=True,product_release=False,stage='P08_B_CANDIDATE_V55_PRECOMPUTED',commit=commit,planner=PLANNER,finalizer=FINALIZER,platform=platform.platform(),versions=versions,exe_sha256=sha(final/'PDRM.exe'),exe_bytes=(final/'PDRM.exe').stat().st_size,bundle_bytes=sum(p.stat().st_size for p in final.rglob('*') if p.is_file()),runtime_bytes=sum(p.stat().st_size for p in (final/'PDRM_OBSERVER_RUNTIME').rglob('*') if p.is_file()),runtime_manifest_sha256=summary.get('observer_runtime_manifest_sha256'),precomputed_calibration_sha256=summary.get('calibration_sha256'),frozen_selftest=summary,private_audio_used=False,private_audio_upload_path=False,user_python_required=False,reference_audio_bundled=False,reference_audio_cached=False,precomputed_calibration_metadata=True)
         (EVIDENCE/'SUMMARY.json').write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8');print('P08_PRODUCT_BUNDLE '+json.dumps(report,ensure_ascii=True),flush=True)
 
 if __name__=='__main__':main()

@@ -1,12 +1,12 @@
 # PDRM 更新EXE：課題台帳・進捗の正本
 
-更新：2026-09-13 / revision 12  
+更新：2026-09-15 / revision 13  
 repo：`htnk1982/test` / branch：`pdrm-note-sub-lab-v1`  
 親Issue：#2。
 
 ## 結論
 
-**P01〜P08すべてDONE。最終Windows EXEは、唯一の利用者本人PCで通常GUI経路の実曲処理を完走し、完成音も本人聴感PASSした。PDRM更新EXEはrelease-ready。**
+**P01〜P08すべてDONE。PDRM v1.0.0は本人Windows PCの通常GUI実曲処理と完成音本人聴感をPASSし、1つのreleaseとしてクローズ。以後は保守運用フェーズへ移行する。**
 
 最終本人報告：
 
@@ -41,11 +41,12 @@ repo：`htnk1982/test` / branch：`pdrm-note-sub-lab-v1`
 - user側Python/TensorFlow/Spleeter導入不要
 - 異常時：`PDRM_DIAGNOSTIC.zip` を生成
 
-## 最終候補 identity
+## Release identity
 
-- commit：`f7bc80c35fad8216f52c443e4995f630b4f35619`
-- run：`34740096874`
-- artifact ID：`10311564114`
+- release branch：`pdrm-release-v1.0.0`
+- accepted source commit：`f7bc80c35fad8216f52c443e4995f630b4f35619`
+- build run：`34740096874`
+- accepted artifact ID：`10311564114`
 - artifact ZIP SHA256：`7d44afdb6e5b24cbc4532748788e4bf7ca100f1a09c4e17f7857601755a40c35`
 - observer runtime manifest SHA256：`97189055de8486501cad720562e467af5c97129ce9bfa1dab91813866c6e1d0c`
 - product calibration SHA256：`b2c094d02e6da731c9953ea65f7d2c4fcba7b31b588b6049af86aa0e2d97399f`
@@ -70,8 +71,22 @@ build-time Frozen self-test、Spleeter native runtime self-test、status telemet
 
 ただし利用者は1名で、その本人PCの実使用経路がPASSしたためrelease blockerにはしない。runtime約1.93GBの削減とfresh-runner一般化は将来の最適化課題であり、現releaseの完了条件ではない。
 
+## 保守運用への引継ぎ
+
+今後の改修では、以下を正本として使用する。
+
+- release source branch：`pdrm-release-v1.0.0`
+- 詳細設計・保守仕様：`docs/MAINTENANCE_HANDOFF_v1.0.0.md`
+- AI再開用プロンプト：`docs/AI_RESTART_PROMPT_v1.0.0.md`
+- bundle生成workflow：`.github/workflows/pdrm-maintenance-handoff-v1.yml`
+- handoff artifact run：`34978736701`
+- handoff artifact ID：`10400039317`
+- handoff inner ZIP SHA256：`9fb5a360b8ee02203d13ba39acb53c99621d1d50cc504bd09cc9a8a65e8d2955`
+
+handoff bundleには、accepted release source一式、GitHub workflows、詳細設計、AI再開prompt、release board、release identity、全file SHA256 manifestを含める。巨大なFrozen EXE / observer runtime binaryは含めず、必要時にaccepted sourceから再buildする。
+
 ## 最終判定
 
-**RELEASE READY / P08 DONE / 親#2 DONE**
+**PDRM v1.0.0 — RELEASE CLOSED / MAINTENANCE BASELINE FIXED**
 
-今後の変更は、この受入済みartifactを基準版として、明確な新要件または実使用上の反証が出た場合のみ別課題として扱う。
+今後の変更は、この受入済みreleaseを基準版として、明確な新要件または実使用上の反証が出た場合のみ新しいversion/Issueとして扱う。

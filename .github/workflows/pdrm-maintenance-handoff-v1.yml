@@ -1,0 +1,91 @@
+name: PDRM v1.0.0 Maintenance Handoff
+on:
+  push:
+    branches: [pdrm-note-sub-lab-v1]
+    paths:
+      - '.github/workflows/pdrm-maintenance-handoff-v1.yml'
+      - 'PDRM_Local_Render_Engine_v1/docs/MAINTENANCE_HANDOFF_v1.0.0.md'
+      - 'PDRM_Local_Render_Engine_v1/docs/AI_RESTART_PROMPT_v1.0.0.md'
+      - 'PDRM_Local_Render_Engine_v1/docs/RELEASE_BOARD.md'
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout maintenance docs
+        uses: actions/checkout@v4
+        with:
+          ref: pdrm-note-sub-lab-v1
+          path: current
+          persist-credentials: false
+      - name: Checkout exact accepted release source
+        uses: actions/checkout@v4
+        with:
+          ref: pdrm-release-v1.0.0
+          path: release
+          persist-credentials: false
+      - name: Assemble handoff
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD 'PDRM_MAINTENANCE_HANDOFF_v1.0.0'
+          $source = Join-Path $root 'SOURCE'
+          $docs = Join-Path $root 'HANDOFF_DOCS'
+          New-Item -ItemType Directory -Path $source,$docs -Force | Out-Null
+
+          Copy-Item -LiteralPath 'release/PDRM_Local_Render_Engine_v1' -Destination $source -Recurse
+          New-Item -ItemType Directory -Path (Join-Path $source '.github') -Force | Out-Null
+          Copy-Item -LiteralPath 'release/.github/workflows' -Destination (Join-Path $source '.github/workflows') -Recurse
+
+          Copy-Item -LiteralPath 'current/PDRM_Local_Render_Engine_v1/docs/MAINTENANCE_HANDOFF_v1.0.0.md' -Destination $docs
+          Copy-Item -LiteralPath 'current/PDRM_Local_Render_Engine_v1/docs/AI_RESTART_PROMPT_v1.0.0.md' -Destination $docs
+          Copy-Item -LiteralPath 'current/PDRM_Local_Render_Engine_v1/docs/RELEASE_BOARD.md' -Destination $docs
+
+          @'
+          PDRM Release v1.0.0 Maintenance Handoff
+          =======================================
+          Accepted release source commit: f7bc80c35fad8216f52c443e4995f630b4f35619
+          Release branch: pdrm-release-v1.0.0
+          Accepted artifact ID: 10311564114
+          Accepted artifact ZIP SHA256: 7d44afdb6e5b24cbc4532748788e4bf7ca100f1a09c4e17f7857601755a40c35
+          Planner: automatic-joint-lab-0.4.0
+          Renderer: joint-v46
+          Finalizer: auto-peak-v3.4.0
+          WAV default: -10.0 LUFS-I / -0.5 dBTP
+          MP3 default: -14.0 LUFS-I / -1.0 dBTP
+          User-PC runtime acceptance: PASS
+          User listening acceptance: PASS
+          '@ | Set-Content -LiteralPath (Join-Path $root 'RELEASE_IDENTITY.txt') -Encoding UTF8
+
+          $rows = Get-ChildItem -LiteralPath $root -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $relative = [IO.Path]::GetRelativePath($root, $_.FullName).Replace('\\','/')
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            [PSCustomObject]@{ path=$relative; bytes=$_.Length; sha256=$hash }
+          }
+          $rows | Export-Csv -LiteralPath (Join-Path $root 'SOURCE_MANIFEST_SHA256.csv') -NoTypeInformation -Encoding UTF8
+
+          @'
+          # 最初に読むもの
+
+          1. `HANDOFF_DOCS/MAINTENANCE_HANDOFF_v1.0.0.md`
+          2. `HANDOFF_DOCS/AI_RESTART_PROMPT_v1.0.0.md`
+          3. `HANDOFF_DOCS/RELEASE_BOARD.md`
+          4. 改修時は `SOURCE/PDRM_Local_Render_Engine_v1/` を正本ソースとして使用
+
+          `SOURCE_MANIFEST_SHA256.csv` でbundle内ファイルの同一性を確認できる。
+          このarchiveには巨大なFrozen EXE / Spleeter runtime binaryは含めない。再buildはソース内のpackaging scriptとGitHub workflowを使用する。
+          '@ | Set-Content -LiteralPath (Join-Path $root 'README_FIRST.md') -Encoding UTF8
+
+          Compress-Archive -LiteralPath $root -DestinationPath 'PDRM_MAINTENANCE_HANDOFF_v1.0.0.zip' -CompressionLevel Optimal -Force
+          $zipHash = (Get-FileHash -LiteralPath 'PDRM_MAINTENANCE_HANDOFF_v1.0.0.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "HANDOFF_ZIP_SHA256=$zipHash"
+          Write-Host "HANDOFF_ZIP_BYTES=$((Get-Item 'PDRM_MAINTENANCE_HANDOFF_v1.0.0.zip').Length)"
+      - name: Upload handoff ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDRM_MAINTENANCE_HANDOFF_v1.0.0
+          path: PDRM_MAINTENANCE_HANDOFF_v1.0.0.zip
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

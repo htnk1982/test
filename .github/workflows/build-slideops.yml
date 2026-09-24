@@ -31,6 +31,13 @@ jobs:
             throw "Source ZIP SHA256 mismatch: $hash"
           }
           Expand-Archive -Path "$PWD\\SlideOpsFormatter-src.zip" -DestinationPath "$PWD\\src" -Force
+
+          # Compile fix: explicitly use the VSTO CustomTaskPane type, not Office.Core.CustomTaskPane.
+          $addinPath = "$PWD\\src\\SlideOpsFormatter\\ThisAddIn.cs"
+          $addinText = Get-Content $addinPath -Raw
+          $addinText = $addinText.Replace("Dictionary<long, CustomTaskPane>", "Dictionary<long, Microsoft.Office.Tools.CustomTaskPane>")
+          Set-Content -Path $addinPath -Value $addinText -Encoding UTF8
+
           Get-ChildItem "$PWD\\src" -Force | Format-Table Name,Mode
 
       - name: Locate Visual Studio and VSTO targets

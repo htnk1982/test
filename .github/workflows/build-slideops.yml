@@ -98,9 +98,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=SlideOps Formatter Local Build" -CertStoreLocation "Cert:\\CurrentUser\\My" -KeyExportPolicy Exportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(3)
-          $pwd = ConvertTo-SecureString "slideops-build" -AsPlainText -Force
-          Export-PfxCertificate -Cert $cert -FilePath "$PWD\\SlideOpsFormatter_TemporaryKey.pfx" -Password $pwd | Out-Null
-          Export-Certificate -Cert $cert -FilePath "$PWD\\SlideOpsFormatter.cer" | Out-Null
+          $cerPath = Join-Path $PWD "SlideOpsFormatter.cer"
+          [IO.File]::WriteAllBytes($cerPath, $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
           "CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Signing certificate: $($cert.Thumbprint)"
 
@@ -131,9 +130,9 @@ jobs:
             if (Test-Path $candidate) { $mage = Get-Item $candidate }
           }
           if (-not $mage) { throw "mage.exe not found" }
-          & $mage.FullName -Sign $appManifest -CertFile "$PWD\\SlideOpsFormatter_TemporaryKey.pfx" -Password "slideops-build"
+          & $mage.FullName -Sign $appManifest -CertHash "$env:CERT_THUMBPRINT"
           if ($LASTEXITCODE -ne 0) { throw "Signing application manifest failed" }
-          & $mage.FullName -Update $deployment -AppManifest $appManifest -CertFile "$PWD\\SlideOpsFormatter_TemporaryKey.pfx" -Password "slideops-build"
+          & $mage.FullName -Update $deployment -AppManifest $appManifest -CertHash "$env:CERT_THUMBPRINT"
           if ($LASTEXITCODE -ne 0) { throw "Signing deployment manifest failed" }
 
       - name: Build distribution ZIP

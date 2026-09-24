@@ -8,96 +8,136 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
-      - name: Expand source
+      - name: Reconstruct and verify source
         shell: pwsh
         run: |
-          Expand-Archive -Path "SlideOpsFormatter-src.zip" -DestinationPath "." -Force
+          $ErrorActionPreference = "Stop"
+          $parts = 0..11 | ForEach-Object {
+            $name = $_.ToString("00")
+            $p = "chunks\\$name.txt"
+            if (-not (Test-Path $p)) { throw "Missing source chunk: $p" }
+            (Get-Content $p -Raw).Trim()
+          }
+          $b64 = $parts -join ""
+          if ($b64.Length -ne 23488) { throw "Base64 source length mismatch: $($b64.Length)" }
+          $bytes = [Convert]::FromBase64String($b64)
+          [IO.File]::WriteAllBytes("$PWD\\SlideOpsFormatter-src.zip", $bytes)
+          $hash = (Get-FileHash "$PWD\\SlideOpsFormatter-src.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne "232ba74229c7662c6bb26cae665d00a4e792f74d55515d4882952ef4bca282f9") {
+            throw "Source ZIP SHA256 mismatch: $hash"
+          }
+          Expand-Archive -Path "$PWD\\SlideOpsFormatter-src.zip" -DestinationPath "$PWD\\src" -Force
+          Get-ChildItem "$PWD\\src" -Force | Format-Table Name,Mode
 
-      - name: Locate Visual Studio and ensure Office development tools
+      - name: Locate Visual Studio and VSTO targets
         shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
           $vs = & $vswhere -latest -products * -property installationPath
           if (-not $vs) { throw "Visual Studio not found" }
-          Write-Host "VS=$vs"
-          $officeTargets = Join-Path $vs "MSBuild\Microsoft\VisualStudio\v17.0\OfficeTools\Microsoft.VisualStudio.Tools.Office.targets"
-          if (-not (Test-Path $officeTargets)) {
-            Write-Host "Office workload missing; installing it..."
-            $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-            & $installer modify --installPath "$vs" --add Microsoft.VisualStudio.Workload.Office --includeRecommended --quiet --norestart
-            if ($LASTEXITCODE -notin @(0,3010)) { throw "VS workload install failed: $LASTEXITCODE" }
+          function Find-OfficeTarget([string]$root) {
+            Get-ChildItem -Path (Join-Path $root "MSBuild\\Microsoft\\VisualStudio") -Filter "Microsoft.VisualStudio.Tools.Office.targets" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           }
-          if (-not (Test-Path $officeTargets)) { throw "VSTO Office targets still not found: $officeTargets" }
-          "VS_PATH=$vs" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Create manifest-signing certificate
-        shell: pwsh
-        run: |
-          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=SlideOps Formatter Local Build" -CertStoreLocation "Cert:\CurrentUser\My" -KeyExportPolicy Exportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(3)
-          $pwd = ConvertTo-SecureString "slideops-build" -AsPlainText -Force
-          Export-PfxCertificate -Cert $cert -FilePath "$PWD\SlideOpsFormatter_TemporaryKey.pfx" -Password $pwd | Out-Null
-          Export-Certificate -Cert $cert -FilePath "$PWD\SlideOpsFormatter.cer" | Out-Null
+          $officeTarget = Find-OfficeTarget $vs
+          if (-not $officeTarget) {
+            $setup = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\setup.exe"
+            & $setup modify --installPath "$vs" --add Microsoft.VisualStudio.Workload.Office --includeRecommended --quiet --norestart
+            if ($LASTEXITCODE -notin @(0,3010)) { throw "VS Office workload install failed: $LASTEXITCODE" }
+            $officeTarget = Find-OfficeTarget $vs
+          }
+          if (-not $officeTarget) { throw "VSTO Office targets not found" }
+          $officeTools = Split-Path $officeTarget.FullName -Parent
+          $vstoToolsPath = Split-Path $officeTools -Parent
+          $msbuild = Join-Path $vs "MSBuild\\Current\\Bin\\MSBuild.exe"
+          if (-not (Test-Path $msbuild)) { throw "MSBuild not found: $msbuild" }
+          "VSTO_TOOLS_PATH=$vstoToolsPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "MSBUILD_PATH=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "VS: $vs"
+          Write-Host "VSTO targets: $($officeTarget.FullName)"
+          Write-Host "VSToolsPath: $vstoToolsPath"
 
       - name: Build VSTO add-in
         shell: pwsh
         run: |
-          $msbuild = Join-Path $env:VS_PATH "MSBuild\Current\Bin\MSBuild.exe"
-          & $msbuild "SlideOpsFormatter\SlideOpsFormatter.csproj" /t:Rebuild /p:Configuration=Release /p:Platform=AnyCPU /m /v:minimal
-          if ($LASTEXITCODE -ne 0) { throw "MSBuild failed: $LASTEXITCODE" }
+          $ErrorActionPreference = "Stop"
+          Push-Location "$PWD\\src"
+          & "$env:MSBUILD_PATH" "SlideOpsFormatter\\SlideOpsFormatter.csproj" /t:Rebuild /p:Configuration=Release /p:Platform=AnyCPU /p:VSToolsPath="$env:VSTO_TOOLS_PATH" /m /v:minimal
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code -ne 0) { throw "MSBuild failed: $code" }
+
+      - name: Create signing certificate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=SlideOps Formatter Local Build" -CertStoreLocation "Cert:\\CurrentUser\\My" -KeyExportPolicy Exportable -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(3)
+          $pwd = ConvertTo-SecureString "slideops-build" -AsPlainText -Force
+          Export-PfxCertificate -Cert $cert -FilePath "$PWD\\SlideOpsFormatter_TemporaryKey.pfx" -Password $pwd | Out-Null
+          Export-Certificate -Cert $cert -FilePath "$PWD\\SlideOpsFormatter.cer" | Out-Null
 
       - name: Sign VSTO manifests
         shell: pwsh
         run: |
-          $release = Join-Path $PWD "SlideOpsFormatter\bin\Release"
+          $ErrorActionPreference = "Stop"
+          $release = Join-Path $PWD "src\\SlideOpsFormatter\\bin\\Release"
+          Write-Host "Release contents:"
+          Get-ChildItem $release -Force | Format-Table Name,Length
           $appManifest = Join-Path $release "SlideOpsFormatter.dll.manifest"
           $deployment = Join-Path $release "SlideOpsFormatter.vsto"
           if (-not (Test-Path $appManifest)) { throw "Application manifest missing: $appManifest" }
           if (-not (Test-Path $deployment)) { throw "Deployment manifest missing: $deployment" }
-          $mage = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft SDKs\ClickOnce\SignTool\mage.exe", "${env:ProgramFiles(x86)}\Microsoft SDKs\Windows\v10.0A\bin\NETFX 4.8 Tools\mage.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $mage = Get-ChildItem "${env:ProgramFiles(x86)}\\Microsoft SDKs\\Windows" -Filter mage.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $mage) {
-            $mage = Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft SDKs\Windows" -Filter mage.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            $candidate = "${env:ProgramFiles(x86)}\\Microsoft SDKs\\ClickOnce\\SignTool\\mage.exe"
+            if (Test-Path $candidate) { $mage = Get-Item $candidate }
           }
           if (-not $mage) { throw "mage.exe not found" }
-          & $mage.FullName -Sign $appManifest -CertFile "$PWD\SlideOpsFormatter_TemporaryKey.pfx" -Password "slideops-build"
+          & $mage.FullName -Sign $appManifest -CertFile "$PWD\\SlideOpsFormatter_TemporaryKey.pfx" -Password "slideops-build"
           if ($LASTEXITCODE -ne 0) { throw "Signing application manifest failed" }
-          & $mage.FullName -Update $deployment -AppManifest $appManifest -CertFile "$PWD\SlideOpsFormatter_TemporaryKey.pfx" -Password "slideops-build"
+          & $mage.FullName -Update $deployment -AppManifest $appManifest -CertFile "$PWD\\SlideOpsFormatter_TemporaryKey.pfx" -Password "slideops-build"
           if ($LASTEXITCODE -ne 0) { throw "Signing deployment manifest failed" }
 
       - name: Build distribution ZIP
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $dist = Join-Path $PWD "dist"
           $ppt = Join-Path $dist "PowerPoint"
           New-Item -ItemType Directory -Path $ppt -Force | Out-Null
-          Copy-Item "SlideOpsFormatter\bin\Release\*" $ppt -Recurse -Force
+          Copy-Item "src\\SlideOpsFormatter\\bin\\Release\\*" $ppt -Recurse -Force
           Copy-Item "SlideOpsFormatter.cer" $dist -Force
-          Copy-Item "installer\Install.cmd" $dist -Force
-          Copy-Item "installer\Install.ps1" $dist -Force
-          Copy-Item "installer\Uninstall.cmd" $dist -Force
-          Copy-Item "installer\Uninstall.ps1" $dist -Force
-          Copy-Item "README-WINDOWS.md" $dist -Force
+          Copy-Item "src\\installer\\Install.cmd" $dist -Force
+          Copy-Item "src\\installer\\Install.ps1" $dist -Force
+          Copy-Item "src\\installer\\Uninstall.cmd" $dist -Force
+          Copy-Item "src\\installer\\Uninstall.ps1" $dist -Force
+          Copy-Item "src\\README-WINDOWS.md" $dist -Force
           $zip = Join-Path $PWD "SlideOpsFormatter-Windows-v0.1.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path "$dist\*" -DestinationPath $zip -CompressionLevel Optimal
+          Compress-Archive -Path "$dist\\*" -DestinationPath $zip -CompressionLevel Optimal
 
       - name: Validate package
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $required = @(
-            "dist\PowerPoint\SlideOpsFormatter.dll",
-            "dist\PowerPoint\SlideOpsFormatter.dll.manifest",
-            "dist\PowerPoint\SlideOpsFormatter.vsto",
-            "dist\SlideOpsFormatter.cer",
-            "dist\Install.cmd",
-            "dist\Install.ps1",
+            "dist\\PowerPoint\\SlideOpsFormatter.dll",
+            "dist\\PowerPoint\\SlideOpsFormatter.dll.manifest",
+            "dist\\PowerPoint\\SlideOpsFormatter.vsto",
+            "dist\\SlideOpsFormatter.cer",
+            "dist\\Install.cmd",
+            "dist\\Install.ps1",
             "SlideOpsFormatter-Windows-v0.1.zip"
           )
           foreach ($p in $required) { if (-not (Test-Path $p)) { throw "Missing package file: $p" } }
-          Get-ChildItem "dist\PowerPoint" | Format-Table Name,Length
+          $hash = (Get-FileHash "SlideOpsFormatter-Windows-v0.1.zip" -Algorithm SHA256).Hash
+          Write-Host "Distribution SHA256: $hash"
+          Get-ChildItem "dist\\PowerPoint" | Format-Table Name,Length
 
       - uses: actions/upload-artifact@v4
         with:

@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -41,6 +41,30 @@ jobs:
           if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
           $vs = & $vswhere -latest -products * -property installationPath
           if (-not $vs) { throw "Visual Studio not found" }
+
+          $setup = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\setup.exe"
+          if (-not (Test-Path $setup)) { throw "Visual Studio Installer setup.exe not found" }
+
+          $vstoBuild = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.TeamOffice.BuildTools -property installationPath
+          if (-not $vstoBuild) {
+            Write-Host "Installing explicit VSTO build tools component..."
+            & $setup modify --installPath "$vs" --add Microsoft.VisualStudio.Component.TeamOffice.BuildTools --add Microsoft.Net.Component.4.8.TargetingPack --quiet --norestart
+            if ($LASTEXITCODE -notin @(0,3010)) { throw "VSTO build tools install failed: $LASTEXITCODE" }
+          }
+
+          $runtimeDll = Get-ChildItem "C:\\Windows\\Microsoft.NET\\assembly" -Filter "Microsoft.VisualStudio.Tools.Office.Runtime.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $runtimeDll) {
+            Write-Host "Installing Microsoft VSTO runtime redistributable..."
+            $vstor = Join-Path $env:RUNNER_TEMP "vstor_redist.exe"
+            Invoke-WebRequest -Uri "https://download.microsoft.com/download/8/6/4/8641e164-7796-4b34-81c7-30d24a5bd533/vstor_redist.exe" -OutFile $vstor
+            $p = Start-Process -FilePath $vstor -ArgumentList "/quiet","/norestart" -Wait -PassThru
+            Write-Host "VSTO runtime installer exit code: $($p.ExitCode)"
+          }
+
+          $runtimeDll = Get-ChildItem "C:\\Windows\\Microsoft.NET\\assembly" -Filter "Microsoft.VisualStudio.Tools.Office.Runtime.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $runtimeDll) { throw "Microsoft.VisualStudio.Tools.Office.Runtime.dll is still missing" }
+          Write-Host "VSTO runtime: $($runtimeDll.FullName)"
+
           function Find-OfficeTarget([string]$root) {
             Get-ChildItem -Path (Join-Path $root "MSBuild\\Microsoft\\VisualStudio") -Filter "Microsoft.VisualStudio.Tools.Office.targets" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           }
